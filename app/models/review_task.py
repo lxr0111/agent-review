@@ -1,11 +1,15 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, DateTime, Enum, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.review.enums import ReviewStatus
 from app.models.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.review_file import ReviewFile
 
 
 class ReviewTask(TimestampMixin, Base):
@@ -35,3 +39,9 @@ class ReviewTask(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    files: Mapped[list["ReviewFile"]] = relationship(
+        back_populates="review_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
