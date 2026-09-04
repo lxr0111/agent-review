@@ -12,6 +12,8 @@ htmlcov/
 .vscode/
 dist/
 build/
+secrets/
+*.pem
 
 # Local diagnostics
 SANDBOX_WRITE_CHECK.md
