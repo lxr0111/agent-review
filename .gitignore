@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+.venv/
+.idea/
+.vscode/
+dist/
+build/
+
+# Local diagnostics
+SANDBOX_WRITE_CHECK.md

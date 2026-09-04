@@ -1,0 +1,70 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: agent_review
+      MYSQL_USER: agent_review
+      MYSQL_PASSWORD: agent_review
+      MYSQL_ROOT_PASSWORD: local_root_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-plocal_root_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    environment: &app-environment
+      APP_ENV: development
+      DATABASE_URL: mysql+pymysql://agent_review:agent_review@mysql:3306/agent_review
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      GITHUB_WEBHOOK_SECRET: development-webhook-secret
+    command:
+      [
+        "sh",
+        "-c",
+        "python scripts/wait_for_database.py && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000",
+      ]
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: .
+    environment: *app-environment
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
