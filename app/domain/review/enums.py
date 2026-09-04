@@ -31,3 +31,4 @@ class FileSkipReason(StrEnum):
     EXCLUDED_PATH = "excluded_path"
     MISSING_PATCH = "missing_patch"
     TOO_LARGE = "too_large"
+    TOTAL_BUDGET_EXCEEDED = "total_budget_exceeded"

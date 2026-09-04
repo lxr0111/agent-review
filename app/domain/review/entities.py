@@ -46,3 +46,11 @@ class SkippedFile:
 class FileSelection:
     reviewable: tuple[ChangedFile, ...]
     skipped: tuple[SkippedFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewContext:
+    pull_request: PullRequestSnapshot
+    reviewable_files: tuple[ChangedFile, ...]
+    skipped_files: tuple[SkippedFile, ...]
+    total_patch_characters: int

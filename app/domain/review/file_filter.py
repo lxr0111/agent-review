@@ -53,6 +53,32 @@ def select_reviewable_files(
     return FileSelection(reviewable=tuple(reviewable), skipped=tuple(skipped))
 
 
+def apply_total_patch_budget(
+    selection: FileSelection,
+    max_patch_characters: int,
+) -> FileSelection:
+    if max_patch_characters < 1:
+        raise ValueError("Total patch character budget must be positive")
+
+    total_characters = 0
+    reviewable: list[ChangedFile] = []
+    skipped = list(selection.skipped)
+    for changed_file in selection.reviewable:
+        patch_characters = len(changed_file.patch or "")
+        if total_characters + patch_characters > max_patch_characters:
+            skipped.append(
+                SkippedFile(
+                    file=changed_file,
+                    reason=FileSkipReason.TOTAL_BUDGET_EXCEEDED,
+                )
+            )
+            continue
+        reviewable.append(changed_file)
+        total_characters += patch_characters
+
+    return FileSelection(reviewable=tuple(reviewable), skipped=tuple(skipped))
+
+
 def _get_skip_reason(
     changed_file: ChangedFile,
     policy: FileFilterPolicy,

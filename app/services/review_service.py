@@ -53,15 +53,33 @@ class ReviewService:
             raise ReviewTaskNotFound(f"Review task {task_id} was not found")
         return task
 
-    def start(self, task_id: UUID) -> ReviewTask:
+    def start(self, task_id: UUID, stage: str = "simulated_review") -> ReviewTask:
         task = self._get_for_update(task_id)
         if task.status == ReviewStatus.RUNNING:
+            if task.current_stage != stage:
+                task.current_stage = stage
+                task.version += 1
+                self._repository.commit()
             return task
         ensure_transition(task.status, ReviewStatus.RUNNING)
         task.status = ReviewStatus.RUNNING
-        task.current_stage = "simulated_review"
+        task.current_stage = stage
         task.started_at = datetime.now(UTC)
         task.attempt_count += 1
+        task.version += 1
+        self._repository.commit()
+        return task
+
+    def mark_stale(self, task_id: UUID, error_code: str, message: str) -> ReviewTask:
+        task = self._get_for_update(task_id)
+        if task.status == ReviewStatus.STALE:
+            return task
+        ensure_transition(task.status, ReviewStatus.STALE)
+        task.status = ReviewStatus.STALE
+        task.current_stage = "stale"
+        task.error_code = error_code
+        task.error_message = message[:2000]
+        task.finished_at = datetime.now(UTC)
         task.version += 1
         self._repository.commit()
         return task

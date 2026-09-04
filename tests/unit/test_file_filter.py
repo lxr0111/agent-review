@@ -1,6 +1,12 @@
-from app.domain.review.entities import ChangedFile
+import pytest
+
+from app.domain.review.entities import ChangedFile, FileSelection
 from app.domain.review.enums import FileChangeStatus, FileSkipReason
-from app.domain.review.file_filter import FileFilterPolicy, select_reviewable_files
+from app.domain.review.file_filter import (
+    FileFilterPolicy,
+    apply_total_patch_budget,
+    select_reviewable_files,
+)
 
 
 def _file(
@@ -74,3 +80,22 @@ def test_select_reviewable_files_applies_patch_character_budget() -> None:
 
     assert result.reviewable == ()
     assert result.skipped[0].reason == FileSkipReason.TOO_LARGE
+
+
+def test_apply_total_patch_budget_keeps_files_that_fit() -> None:
+    first = _file("src/first.py", patch="1234")
+    second = _file("src/second.py", patch="5678")
+
+    result = apply_total_patch_budget(
+        FileSelection(reviewable=(first, second), skipped=()),
+        max_patch_characters=4,
+    )
+
+    assert result.reviewable == (first,)
+    assert result.skipped[0].file is second
+    assert result.skipped[0].reason == FileSkipReason.TOTAL_BUDGET_EXCEEDED
+
+
+def test_apply_total_patch_budget_rejects_non_positive_limit() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        apply_total_patch_budget(FileSelection(reviewable=(), skipped=()), 0)
