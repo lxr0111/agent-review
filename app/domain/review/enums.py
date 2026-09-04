@@ -14,3 +14,20 @@ class ReviewStatus(StrEnum):
 class WebhookEventStatus(StrEnum):
     ACCEPTED = "accepted"
     IGNORED = "ignored"
+
+
+class FileChangeStatus(StrEnum):
+    ADDED = "added"
+    MODIFIED = "modified"
+    REMOVED = "removed"
+    RENAMED = "renamed"
+    COPIED = "copied"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+class FileSkipReason(StrEnum):
+    REMOVED = "removed"
+    EXCLUDED_PATH = "excluded_path"
+    MISSING_PATCH = "missing_patch"
+    TOO_LARGE = "too_large"
