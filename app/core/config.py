@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     github_api_version: str = "2026-03-10"
     github_http_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
     github_token_refresh_buffer_seconds: int = Field(default=300, ge=0, le=900)
+    github_max_pull_request_files: int = Field(default=3_000, ge=1, le=3_000)
     database_pool_size: int = Field(default=5, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
 

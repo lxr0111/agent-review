@@ -57,6 +57,18 @@ events, while `(repository, pull_request_number, head_sha)` prevents duplicate r
 tasks for the same commit. Raw webhook payloads are not persisted; only a SHA-256
 digest is retained for audit purposes.
 
+## GitHub App provider
+
+The GitHub provider uses short-lived installation access tokens rather than a personal
+access token. Set `GITHUB_APP_CLIENT_ID` and `GITHUB_PRIVATE_KEY_PATH` when you are
+ready to connect a real GitHub App. The private key must remain outside version
+control; `secrets/` and `*.pem` are ignored by Git.
+
+The provider currently supports fetching pull request metadata and all changed files,
+including pagination, typed response validation, one token refresh after a `401`, and
+safe error categories for authentication, permissions, rate limits, missing resources,
+and transient failures. It is not connected to the Celery review pipeline yet.
+
 ## Quality checks
 
 ```powershell

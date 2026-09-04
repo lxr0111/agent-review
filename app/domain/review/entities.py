@@ -21,7 +21,7 @@ class PullRequestSnapshot:
     base_sha: str
     head_sha: str
     draft: bool
-    author_login: str
+    author_login: str | None
     body: str | None = None
 
 
