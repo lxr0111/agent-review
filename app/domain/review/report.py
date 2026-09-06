@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -46,3 +47,24 @@ class ReviewReport:
     prompt_version: str
     reviewed_file_count: int
     skipped_file_count: int
+
+
+def derive_review_risk(findings: Iterable[ReviewFinding]) -> ReviewRiskLevel:
+    severity_to_risk = {
+        FindingSeverity.LOW: ReviewRiskLevel.LOW,
+        FindingSeverity.MEDIUM: ReviewRiskLevel.MEDIUM,
+        FindingSeverity.HIGH: ReviewRiskLevel.HIGH,
+        FindingSeverity.CRITICAL: ReviewRiskLevel.CRITICAL,
+    }
+    risk_order = {
+        ReviewRiskLevel.NONE: 0,
+        ReviewRiskLevel.LOW: 1,
+        ReviewRiskLevel.MEDIUM: 2,
+        ReviewRiskLevel.HIGH: 3,
+        ReviewRiskLevel.CRITICAL: 4,
+    }
+    return max(
+        (severity_to_risk[finding.severity] for finding in findings),
+        key=risk_order.__getitem__,
+        default=ReviewRiskLevel.NONE,
+    )

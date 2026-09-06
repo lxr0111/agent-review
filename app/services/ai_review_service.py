@@ -1,27 +1,13 @@
 from app.domain.review.entities import ReviewContext
 from app.domain.review.exceptions import ReviewOutputValidationError
 from app.domain.review.report import (
-    FindingSeverity,
     ReviewFinding,
     ReviewReport,
     ReviewRiskLevel,
+    derive_review_risk,
 )
 from app.providers.llm.prompt_builder import PROMPT_VERSION, ReviewPromptBuilder
 from app.providers.llm.protocol import LLMProvider
-
-_SEVERITY_TO_RISK = {
-    FindingSeverity.LOW: ReviewRiskLevel.LOW,
-    FindingSeverity.MEDIUM: ReviewRiskLevel.MEDIUM,
-    FindingSeverity.HIGH: ReviewRiskLevel.HIGH,
-    FindingSeverity.CRITICAL: ReviewRiskLevel.CRITICAL,
-}
-_RISK_ORDER = {
-    ReviewRiskLevel.NONE: 0,
-    ReviewRiskLevel.LOW: 1,
-    ReviewRiskLevel.MEDIUM: 2,
-    ReviewRiskLevel.HIGH: 3,
-    ReviewRiskLevel.CRITICAL: 4,
-}
 
 
 class AIReviewService:
@@ -80,19 +66,10 @@ class AIReviewService:
 
         return ReviewReport(
             summary=output.summary,
-            risk_level=_derive_risk_level(findings),
+            risk_level=derive_review_risk(findings),
             findings=tuple(findings),
             model_name=self._provider.model_name,
             prompt_version=prompt.version,
             reviewed_file_count=len(context.reviewable_files),
             skipped_file_count=len(context.skipped_files),
         )
-
-
-def _derive_risk_level(findings: list[ReviewFinding]) -> ReviewRiskLevel:
-    if not findings:
-        return ReviewRiskLevel.NONE
-    return max(
-        (_SEVERITY_TO_RISK[finding.severity] for finding in findings),
-        key=_RISK_ORDER.__getitem__,
-    )

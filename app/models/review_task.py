@@ -10,6 +10,7 @@ from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.review_file import ReviewFile
+    from app.models.review_report import ReviewReportRecord
 
 
 class ReviewTask(TimestampMixin, Base):
@@ -44,4 +45,10 @@ class ReviewTask(TimestampMixin, Base):
         back_populates="review_task",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    report: Mapped["ReviewReportRecord | None"] = relationship(
+        back_populates="review_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )
