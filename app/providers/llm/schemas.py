@@ -19,4 +19,4 @@ class LLMReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     summary: str = Field(min_length=1, max_length=4_000)
-    findings: tuple[LLMReviewFinding, ...] = Field(default=(), max_length=50)
+    findings: tuple[LLMReviewFinding, ...] = Field(max_length=50)

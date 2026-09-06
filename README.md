@@ -69,6 +69,24 @@ including pagination, typed response validation, one token refresh after a `401`
 safe error categories for authentication, permissions, rate limits, missing resources,
 and transient failures. It is not connected to the Celery review pipeline yet.
 
+## AI review provider
+
+AI review uses a provider interface so application services do not depend on a model
+vendor. Local development defaults to the deterministic mock provider and makes no
+paid API requests. To use the OpenAI Responses API, configure a model that supports
+structured outputs and provide the API key only through the environment:
+
+```text
+LLM_PROVIDER=openai
+LLM_MODEL=your-structured-output-capable-model
+OPENAI_API_KEY=your-api-key
+```
+
+The OpenAI adapter requests a strict JSON Schema response, disables response storage,
+validates the returned report with Pydantic, and classifies authentication, permission,
+rate-limit, transient, refusal, and invalid-output failures. Model names are deliberately
+not hard-coded. Automated tests use an HTTP mock and never call the paid API.
+
 ## Quality checks
 
 ```powershell

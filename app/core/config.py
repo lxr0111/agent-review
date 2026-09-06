@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +29,11 @@ class Settings(BaseSettings):
     review_max_file_changes: int = Field(default=2_000, ge=1)
     review_max_file_patch_characters: int = Field(default=100_000, ge=1)
     review_max_total_patch_characters: int = Field(default=300_000, ge=1)
+    llm_provider: Literal["mock", "openai"] = "mock"
+    llm_model: str | None = None
+    openai_api_key: SecretStr | None = None
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    llm_max_output_tokens: int = Field(default=4_096, ge=1)
     database_pool_size: int = Field(default=5, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
 

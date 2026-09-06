@@ -59,3 +59,8 @@ def test_review_output_limits_number_of_findings() -> None:
 
     with pytest.raises(ValidationError):
         LLMReviewOutput(summary="Too many findings", findings=(finding,) * 51)
+
+
+def test_review_output_requires_findings_for_strict_json_schema() -> None:
+    with pytest.raises(ValidationError):
+        LLMReviewOutput.model_validate({"summary": "No problems were found."})

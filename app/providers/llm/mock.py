@@ -10,7 +10,8 @@ class MockLLMProvider:
         model_name: str = "mock-review-model",
     ) -> None:
         self._output = output or LLMReviewOutput(
-            summary="No actionable problems were found in the supplied changes."
+            summary="No actionable problems were found in the supplied changes.",
+            findings=(),
         )
         self._model_name = model_name
         self.prompts: list[ReviewPrompt] = []
