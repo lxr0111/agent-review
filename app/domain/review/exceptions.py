@@ -19,3 +19,7 @@ class PullRequestHeadChanged(ReviewContextError):
 
 class DuplicateChangedFilePath(ReviewContextError):
     pass
+
+
+class ReviewOutputValidationError(Exception):
+    pass
