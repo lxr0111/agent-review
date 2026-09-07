@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from unittest.mock import Mock
 
@@ -43,6 +44,21 @@ def _changed_file(
         "deletions": 1,
         "changes": 2,
         "patch": patch,
+    }
+
+
+def _review_response(
+    review_id: int = 9001,
+    *,
+    body: str = "Automated review",
+    commit_id: str = "abcdef123456",
+) -> dict[str, object]:
+    return {
+        "id": review_id,
+        "body": body,
+        "state": "COMMENTED",
+        "html_url": f"https://github.test/reviews/{review_id}",
+        "commit_id": commit_id,
     }
 
 
@@ -261,3 +277,79 @@ def test_client_configuration_requires_credentials() -> None:
 
     with pytest.raises(GitHubConfigurationError, match="GITHUB_APP_CLIENT_ID"):
         GitHubApiClient.from_settings(Settings())
+
+
+def test_create_pull_request_review_posts_comment_for_explicit_commit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repository/pulls/7/reviews"
+        assert json.loads(request.content) == {
+            "body": "Automated review",
+            "event": "COMMENT",
+            "commit_id": "abcdef123456",
+        }
+        return httpx.Response(200, json=_review_response(), request=request)
+
+    client, _ = _client(handler)
+    review = client.create_pull_request_review(
+        installation_id=42,
+        repository="owner/repository",
+        pull_request_number=7,
+        commit_sha="abcdef123456",
+        body="Automated review",
+    )
+
+    assert review.id == 9001
+    assert review.state == "COMMENTED"
+    assert review.commit_sha == "abcdef123456"
+
+
+def test_list_pull_request_reviews_parses_review_bodies() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["per_page"] == "100"
+        return httpx.Response(
+            200,
+            json=[_review_response(body="<!-- agent-review:task=one -->")],
+            request=request,
+        )
+
+    client, _ = _client(handler)
+    reviews = client.list_pull_request_reviews(
+        installation_id=42,
+        repository="owner/repository",
+        pull_request_number=7,
+    )
+
+    assert len(reviews) == 1
+    assert reviews[0].body == "<!-- agent-review:task=one -->"
+
+
+def test_create_review_refreshes_token_and_replays_json_body_after_401() -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        assert json.loads(request.content)["event"] == "COMMENT"
+        if request_count == 1:
+            assert request.headers["authorization"] == "Bearer ghs_expired"
+            return httpx.Response(401, request=request)
+        assert request.headers["authorization"] == "Bearer ghs_refreshed"
+        return httpx.Response(200, json=_review_response(), request=request)
+
+    client, auth = _client(handler)
+    auth.get_installation_token.side_effect = [
+        InstallationToken(SecretStr("ghs_expired"), TOKEN_EXPIRY),
+        InstallationToken(SecretStr("ghs_refreshed"), TOKEN_EXPIRY),
+    ]
+
+    client.create_pull_request_review(
+        installation_id=42,
+        repository="owner/repository",
+        pull_request_number=7,
+        commit_sha="abcdef123456",
+        body="Automated review",
+    )
+
+    auth.invalidate.assert_called_once_with(42)
+    assert request_count == 2

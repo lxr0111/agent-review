@@ -64,10 +64,17 @@ access token. Set `GITHUB_APP_CLIENT_ID` and `GITHUB_PRIVATE_KEY_PATH` when you 
 ready to connect a real GitHub App. The private key must remain outside version
 control; `secrets/` and `*.pem` are ignored by Git.
 
-The provider currently supports fetching pull request metadata and all changed files,
-including pagination, typed response validation, one token refresh after a `401`, and
-safe error categories for authentication, permissions, rate limits, missing resources,
-and transient failures. It is not connected to the Celery review pipeline yet.
+The provider supports fetching pull request metadata, changed files, and existing pull
+request reviews, as well as publishing a summary review for an explicit commit. API
+responses are validated, pagination remains on the configured GitHub origin, and a
+`401` triggers one installation-token refresh.
+
+Review publication is tracked separately from report generation. Before posting, the
+service verifies that the pull request still points to the task's head commit. A stable
+hidden marker allows retries to reconcile a GitHub review created before its database
+receipt was saved, avoiding duplicate bot comments. AI reviews are published as
+non-blocking `COMMENT` reviews; automatic approval and merge blocking are deliberately
+out of scope. The publication service is not connected to the Celery pipeline yet.
 
 ## AI review provider
 

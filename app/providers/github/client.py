@@ -8,7 +8,7 @@ import httpx
 from pydantic import TypeAdapter, ValidationError
 
 from app.core.config import Settings
-from app.domain.review.entities import ChangedFile, PullRequestSnapshot
+from app.domain.review.entities import ChangedFile, PullRequestReview, PullRequestSnapshot
 from app.domain.review.enums import FileChangeStatus
 from app.providers.github.auth import GitHubAppAuth
 from app.providers.github.exceptions import (
@@ -20,10 +20,12 @@ from app.providers.github.exceptions import (
 from app.providers.github.schemas import (
     GitHubChangedFileResponse,
     GitHubPullRequestResponse,
+    GitHubPullRequestReviewResponse,
 )
 from app.providers.github.transport import GitHubHttpTransport
 
 _CHANGED_FILES_ADAPTER = TypeAdapter(list[GitHubChangedFileResponse])
+_REVIEWS_ADAPTER = TypeAdapter(list[GitHubPullRequestReviewResponse])
 
 
 class GitHubApiClient:
@@ -147,6 +149,63 @@ class GitHubApiClient:
             url = next_url
             params = None
 
+    def list_pull_request_reviews(
+        self,
+        *,
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+    ) -> tuple[PullRequestReview, ...]:
+        repository_path = _repository_path(repository)
+        _validate_pull_request_number(pull_request_number)
+        url = f"/repos/{repository_path}/pulls/{pull_request_number}/reviews"
+        params: Mapping[str, str | int] | None = {"per_page": 100, "page": 1}
+        visited_urls: set[str] = set()
+        reviews: list[PullRequestReview] = []
+
+        while True:
+            response = self._authenticated_request(
+                "GET",
+                url,
+                installation_id=installation_id,
+                expected_status=200,
+                params=params,
+            )
+            reviews.extend(self._parse_reviews(response))
+            next_url = self._get_next_page_url(response)
+            if next_url is None:
+                return tuple(reviews)
+            if next_url in visited_urls:
+                raise _payload_error("GitHub pagination contains a loop", response)
+            visited_urls.add(next_url)
+            url = next_url
+            params = None
+
+    def create_pull_request_review(
+        self,
+        *,
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+        commit_sha: str,
+        body: str,
+    ) -> PullRequestReview:
+        repository_path = _repository_path(repository)
+        _validate_pull_request_number(pull_request_number)
+        if not 7 <= len(commit_sha) <= 64 or any(character.isspace() for character in commit_sha):
+            raise GitHubPayloadError("GitHub review commit SHA is invalid")
+        if not body.strip():
+            raise GitHubPayloadError("GitHub review body must not be empty")
+
+        response = self._authenticated_request(
+            "POST",
+            f"/repos/{repository_path}/pulls/{pull_request_number}/reviews",
+            installation_id=installation_id,
+            expected_status=200,
+            json_body={"body": body, "event": "COMMENT", "commit_id": commit_sha},
+        )
+        return self._parse_review(response)
+
     def close(self) -> None:
         if self._owned_http_client is not None:
             self._owned_http_client.close()
@@ -170,6 +229,7 @@ class GitHubApiClient:
         installation_id: int,
         expected_status: int,
         params: Mapping[str, str | int] | None = None,
+        json_body: Mapping[str, object] | None = None,
     ) -> httpx.Response:
         token = self._auth.get_installation_token(installation_id)
         try:
@@ -179,6 +239,7 @@ class GitHubApiClient:
                 bearer_token=token.value.get_secret_value(),
                 expected_status=expected_status,
                 params=params,
+                json_body=json_body,
             )
         except GitHubAuthenticationError:
             self._auth.invalidate(installation_id)
@@ -189,7 +250,26 @@ class GitHubApiClient:
                 bearer_token=refreshed.value.get_secret_value(),
                 expected_status=expected_status,
                 params=params,
+                json_body=json_body,
             )
+
+    def _parse_review(self, response: httpx.Response) -> PullRequestReview:
+        try:
+            payload = GitHubPullRequestReviewResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise _payload_error(
+                "GitHub pull request review response is invalid", response
+            ) from exc
+        return _review_from_payload(payload)
+
+    def _parse_reviews(self, response: httpx.Response) -> tuple[PullRequestReview, ...]:
+        try:
+            payloads = _REVIEWS_ADAPTER.validate_python(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise _payload_error(
+                "GitHub pull request reviews response is invalid", response
+            ) from exc
+        return tuple(_review_from_payload(payload) for payload in payloads)
 
     def _parse_changed_files(self, response: httpx.Response) -> tuple[ChangedFile, ...]:
         try:
@@ -262,4 +342,14 @@ def _payload_error(message: str, response: httpx.Response) -> GitHubPayloadError
         message,
         status_code=response.status_code,
         request_id=response.headers.get("x-github-request-id"),
+    )
+
+
+def _review_from_payload(payload: GitHubPullRequestReviewResponse) -> PullRequestReview:
+    return PullRequestReview(
+        id=payload.id,
+        commit_sha=payload.commit_id,
+        state=payload.state,
+        body=payload.body,
+        html_url=payload.html_url,
     )

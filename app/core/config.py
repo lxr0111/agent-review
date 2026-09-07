@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     review_max_file_changes: int = Field(default=2_000, ge=1)
     review_max_file_patch_characters: int = Field(default=100_000, ge=1)
     review_max_total_patch_characters: int = Field(default=300_000, ge=1)
+    github_review_body_max_characters: int = Field(default=60_000, ge=1_000, le=65_000)
     llm_provider: Literal["mock", "openai"] = "mock"
     llm_model: str | None = None
     openai_api_key: SecretStr | None = None

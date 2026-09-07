@@ -23,3 +23,11 @@ class DuplicateChangedFilePath(ReviewContextError):
 
 class ReviewOutputValidationError(Exception):
     pass
+
+
+class ReviewReportNotFound(Exception):
+    pass
+
+
+class ReviewPublicationConflict(Exception):
+    pass

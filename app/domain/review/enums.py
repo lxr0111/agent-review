@@ -11,6 +11,16 @@ class ReviewStatus(StrEnum):
     STALE = "stale"
 
 
+class ReviewPublicationStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class ReviewPublicationProvider(StrEnum):
+    GITHUB = "github"
+
+
 class WebhookEventStatus(StrEnum):
     ACCEPTED = "accepted"
     IGNORED = "ignored"

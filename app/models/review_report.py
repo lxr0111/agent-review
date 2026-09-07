@@ -20,6 +20,7 @@ from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.review_finding import ReviewFindingRecord
+    from app.models.review_publication import ReviewPublicationRecord
     from app.models.review_task import ReviewTask
 
 
@@ -55,4 +56,10 @@ class ReviewReportRecord(TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ReviewFindingRecord.position",
+    )
+    publication: Mapped["ReviewPublicationRecord | None"] = relationship(
+        back_populates="review_report",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )

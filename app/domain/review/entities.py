@@ -54,3 +54,12 @@ class ReviewContext:
     reviewable_files: tuple[ChangedFile, ...]
     skipped_files: tuple[SkippedFile, ...]
     total_patch_characters: int
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestReview:
+    id: int
+    commit_sha: str
+    state: str
+    body: str | None
+    html_url: str | None

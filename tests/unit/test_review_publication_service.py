@@ -1,0 +1,244 @@
+from collections.abc import Iterator
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.domain.review.entities import PullRequestReview, PullRequestSnapshot
+from app.domain.review.enums import ReviewPublicationProvider, ReviewPublicationStatus, ReviewStatus
+from app.domain.review.exceptions import PullRequestHeadChanged
+from app.domain.review.report import ReviewReport, ReviewRiskLevel
+from app.models import Base
+from app.models.review_publication import ReviewPublicationRecord
+from app.models.review_task import ReviewTask
+from app.providers.github.exceptions import GitHubTransientError
+from app.repositories.review_publication_repository import ReviewPublicationRepository
+from app.repositories.review_report_repository import ReviewReportRepository
+from app.repositories.review_task_repository import ReviewTaskRepository
+from app.services.review_markdown_formatter import review_marker
+from app.services.review_publication_service import ReviewPublicationService
+from app.services.review_report_service import ReviewReportService
+
+HEAD_SHA = "abcdef123456"
+PUBLISHED_AT = datetime(2026, 9, 7, 8, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def session() -> Iterator[Session]:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, connection_record) -> None:
+        del connection_record
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as database_session:
+        yield database_session
+    engine.dispose()
+
+
+class FakeGitHubProvider:
+    def __init__(self, session: Session, *, head_sha: str = HEAD_SHA) -> None:
+        self._session = session
+        self.head_sha = head_sha
+        self.reviews: tuple[PullRequestReview, ...] = ()
+        self.created_bodies: list[str] = []
+        self.get_calls = 0
+        self.list_calls = 0
+        self.create_calls = 0
+        self.create_error: Exception | None = None
+
+    def get_pull_request(
+        self,
+        *,
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+    ) -> PullRequestSnapshot:
+        self._assert_request(installation_id, repository, pull_request_number)
+        assert not self._session.in_transaction()
+        self.get_calls += 1
+        return PullRequestSnapshot(
+            repository=repository,
+            number=pull_request_number,
+            title="Publish a review",
+            body=None,
+            base_sha="123456abcdef",
+            head_sha=self.head_sha,
+            draft=False,
+            author_login="octocat",
+        )
+
+    def list_pull_request_files(self, **kwargs: object) -> tuple[()]:
+        del kwargs
+        return ()
+
+    def list_pull_request_reviews(
+        self,
+        *,
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+    ) -> tuple[PullRequestReview, ...]:
+        self._assert_request(installation_id, repository, pull_request_number)
+        assert not self._session.in_transaction()
+        self.list_calls += 1
+        return self.reviews
+
+    def create_pull_request_review(
+        self,
+        *,
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+        commit_sha: str,
+        body: str,
+    ) -> PullRequestReview:
+        self._assert_request(installation_id, repository, pull_request_number)
+        assert commit_sha == HEAD_SHA
+        assert not self._session.in_transaction()
+        self.create_calls += 1
+        self.created_bodies.append(body)
+        if self.create_error is not None:
+            raise self.create_error
+        return PullRequestReview(
+            id=9001,
+            commit_sha=commit_sha,
+            state="COMMENTED",
+            body=body,
+            html_url="https://github.test/owner/repository/pull/7#pullrequestreview-9001",
+        )
+
+    @staticmethod
+    def _assert_request(
+        installation_id: int,
+        repository: str,
+        pull_request_number: int,
+    ) -> None:
+        assert installation_id == 42
+        assert repository == "owner/repository"
+        assert pull_request_number == 7
+
+
+def _task_with_report(session: Session) -> tuple[ReviewTask, str]:
+    task = ReviewTask(
+        repository="owner/repository",
+        github_repository_id=1001,
+        installation_id=42,
+        pull_request_number=7,
+        base_sha="123456abcdef",
+        head_sha=HEAD_SHA,
+        status=ReviewStatus.RUNNING,
+        current_stage="review_ready",
+        attempt_count=1,
+        version=3,
+    )
+    session.add(task)
+    session.commit()
+    report = ReviewReport(
+        summary="No actionable problems were found.",
+        risk_level=ReviewRiskLevel.NONE,
+        findings=(),
+        model_name="mock-review-model",
+        prompt_version="review-v1",
+        reviewed_file_count=1,
+        skipped_file_count=0,
+    )
+    record = ReviewReportService(ReviewReportRepository(session)).save(task.id, report)
+    return task, record.content_digest
+
+
+def _service(session: Session, github: FakeGitHubProvider) -> ReviewPublicationService:
+    return ReviewPublicationService(
+        review_tasks=ReviewTaskRepository(session),
+        review_reports=ReviewReportRepository(session),
+        publications=ReviewPublicationRepository(session),
+        github=github,
+        clock=lambda: PUBLISHED_AT,
+    )
+
+
+def test_publish_creates_summary_review_and_persists_receipt(session: Session) -> None:
+    task, report_digest = _task_with_report(session)
+    github = FakeGitHubProvider(session)
+
+    review = _service(session, github).publish(task.id)
+
+    assert review.id == 9001
+    assert github.get_calls == github.list_calls == github.create_calls == 1
+    assert review_marker(task.id, report_digest) in github.created_bodies[0]
+    publication = session.scalar(select(ReviewPublicationRecord))
+    assert publication is not None
+    assert publication.provider == ReviewPublicationProvider.GITHUB
+    assert publication.status == ReviewPublicationStatus.PUBLISHED
+    assert publication.external_review_id == 9001
+    assert publication.attempt_count == 1
+    assert publication.published_at == PUBLISHED_AT.replace(tzinfo=None)
+
+
+def test_repeated_publish_returns_stored_receipt_without_github_call(session: Session) -> None:
+    task, _ = _task_with_report(session)
+    github = FakeGitHubProvider(session)
+    service = _service(session, github)
+    first = service.publish(task.id)
+
+    second = service.publish(task.id)
+
+    assert second.id == first.id
+    assert github.get_calls == github.list_calls == github.create_calls == 1
+
+
+def test_publish_reconciles_review_created_before_database_commit(session: Session) -> None:
+    task, report_digest = _task_with_report(session)
+    github = FakeGitHubProvider(session)
+    marker = review_marker(task.id, report_digest)
+    github.reviews = (
+        PullRequestReview(
+            id=8001,
+            commit_sha=HEAD_SHA,
+            state="COMMENTED",
+            body=f"Already published\n\n{marker}",
+            html_url="https://github.test/review/8001",
+        ),
+    )
+
+    review = _service(session, github).publish(task.id)
+
+    assert review.id == 8001
+    assert github.create_calls == 0
+    publication = session.scalar(select(ReviewPublicationRecord))
+    assert publication is not None
+    assert publication.status == ReviewPublicationStatus.PUBLISHED
+    assert publication.external_review_id == 8001
+
+
+def test_publish_marks_task_stale_when_head_changed_during_analysis(session: Session) -> None:
+    task, _ = _task_with_report(session)
+    github = FakeGitHubProvider(session, head_sha="newer-head-sha")
+
+    with pytest.raises(PullRequestHeadChanged):
+        _service(session, github).publish(task.id)
+
+    session.refresh(task)
+    assert task.status == ReviewStatus.STALE
+    assert task.error_code == "pull_request_head_changed_before_publication"
+    assert github.list_calls == github.create_calls == 0
+    assert session.scalar(select(ReviewPublicationRecord)) is None
+
+
+def test_transient_github_failure_is_recorded_for_retry(session: Session) -> None:
+    task, _ = _task_with_report(session)
+    github = FakeGitHubProvider(session)
+    github.create_error = GitHubTransientError("GitHub temporarily unavailable")
+
+    with pytest.raises(GitHubTransientError):
+        _service(session, github).publish(task.id)
+
+    publication = session.scalar(select(ReviewPublicationRecord))
+    assert publication is not None
+    assert publication.status == ReviewPublicationStatus.FAILED
+    assert publication.last_error_code == "github_transient_error"
+    assert publication.external_review_id is None

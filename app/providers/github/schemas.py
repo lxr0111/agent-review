@@ -35,3 +35,13 @@ class GitHubChangedFileResponse(BaseModel):
     changes: int = Field(ge=0)
     patch: str | None = None
     previous_filename: str | None = None
+
+
+class GitHubPullRequestReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int = Field(gt=0)
+    body: str | None = None
+    state: str = Field(min_length=1)
+    html_url: str | None = None
+    commit_id: str = Field(min_length=7, max_length=64)
