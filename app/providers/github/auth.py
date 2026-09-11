@@ -112,7 +112,7 @@ class GitHubAppAuth:
             f"/app/installations/{installation_id}/access_tokens",
             bearer_token=self.create_app_jwt(),
             expected_status=201,
-            json_body={"permissions": {"contents": "read", "pull_requests": "read"}},
+            json_body={"permissions": {"contents": "read", "pull_requests": "write"}},
         )
         try:
             payload = _InstallationTokenResponse.model_validate(response.json())

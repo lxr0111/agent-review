@@ -1,8 +1,8 @@
 # AgentReview
 
-AgentReview is a multi-agent GitHub pull request review platform. The current version
-provides a FastAPI API, MySQL persistence, a Redis-backed Celery worker, task state
-transitions, health checks, and the first GitHub webhook ingestion flow.
+AgentReview is an AI-powered GitHub pull request review platform. The current version
+provides a complete asynchronous flow from GitHub webhook ingestion through diff
+selection, structured AI review, MySQL persistence, and GitHub summary publication.
 
 ## Requirements
 
@@ -26,20 +26,6 @@ docker compose up --build
 
 Open the API documentation at <http://localhost:8000/docs>.
 
-Create a simulated review:
-
-```powershell
-$body = @{
-  repository = "example/project"
-  pull_request_number = 1
-  head_sha = "0123456789abcdef"
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/reviews `
-  -ContentType "application/json" -Body $body
-```
-
-Use `GET /api/v1/reviews/{task_id}` to observe the task reach `completed`.
-
 ## GitHub webhook ingestion
 
 Configure the same random secret in `GITHUB_WEBHOOK_SECRET` and in the GitHub webhook
@@ -60,8 +46,10 @@ digest is retained for audit purposes.
 ## GitHub App provider
 
 The GitHub provider uses short-lived installation access tokens rather than a personal
-access token. Set `GITHUB_APP_CLIENT_ID` and `GITHUB_PRIVATE_KEY_PATH` when you are
-ready to connect a real GitHub App. The private key must remain outside version
+access token. Configure the GitHub App with read access to repository contents and
+read/write access to pull requests. Set `GITHUB_APP_CLIENT_ID`, place the private key
+under `secrets/`, and set `GITHUB_PRIVATE_KEY_PATH` to its path. Docker mounts this
+directory read-only into the worker. The private key must remain outside version
 control; `secrets/` and `*.pem` are ignored by Git.
 
 The provider supports fetching pull request metadata, changed files, and existing pull
@@ -74,7 +62,22 @@ service verifies that the pull request still points to the task's head commit. A
 hidden marker allows retries to reconcile a GitHub review created before its database
 receipt was saved, avoiding duplicate bot comments. AI reviews are published as
 non-blocking `COMMENT` reviews; automatic approval and merge blocking are deliberately
-out of scope. The publication service is not connected to the Celery pipeline yet.
+out of scope.
+
+## Worker pipeline and retries
+
+The Celery worker executes the application pipeline rather than embedding business
+logic in the task function. Each delivery records an attempt, and a retry resumes from
+an existing report instead of paying for the same AI analysis again. Completed, stale,
+cancelled, and failed tasks are terminal and are not reprocessed.
+
+GitHub and AI rate limits, temporary upstream failures, network timeouts, and transient
+database connection errors use bounded exponential backoff with jitter. Provider
+`Retry-After` and GitHub rate-limit reset values are honored. Permanent errors fail
+immediately, while a changed pull request head marks the task stale.
+
+Use `GET /api/v1/reviews/{task_id}` with the task ID returned by the webhook endpoint
+to observe `current_stage`, `attempt_count`, and the terminal status.
 
 ## AI review provider
 

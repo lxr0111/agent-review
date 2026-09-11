@@ -77,7 +77,7 @@ def test_installation_token_is_requested_once_and_cached() -> None:
         assert request.headers["authorization"].startswith("Bearer ey")
         assert request.headers["x-github-api-version"] == "2026-03-10"
         assert json.loads(request.content) == {
-            "permissions": {"contents": "read", "pull_requests": "read"}
+            "permissions": {"contents": "read", "pull_requests": "write"}
         }
         return httpx.Response(
             201,

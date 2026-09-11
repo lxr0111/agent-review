@@ -60,6 +60,29 @@ def test_start_review_updates_stage_when_already_running() -> None:
     repository.commit.assert_called_once()
 
 
+def test_begin_attempt_increments_count_when_worker_resumes_running_task() -> None:
+    task = ReviewTask(
+        id=uuid4(),
+        repository="owner/repo",
+        pull_request_number=7,
+        head_sha="abcdef123456",
+        status=ReviewStatus.RUNNING,
+        current_stage="publishing_review",
+        attempt_count=1,
+        version=3,
+    )
+    repository = Mock()
+    repository.get.return_value = task
+
+    result = ReviewService(repository).begin_attempt(task.id)
+
+    assert result.status == ReviewStatus.RUNNING
+    assert result.current_stage == "starting_pipeline"
+    assert result.attempt_count == 2
+    assert result.version == 4
+    repository.commit.assert_called_once()
+
+
 def test_mark_stale_records_reason_and_finishes_task() -> None:
     task = ReviewTask(
         id=uuid4(),

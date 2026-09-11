@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from app.core.exceptions import ReviewTaskNotFound
+from app.core.exceptions import InvalidStateTransition, ReviewTaskNotFound
 from app.domain.review.enums import ReviewStatus
 from app.domain.review.state_machine import ensure_transition
 from app.models.review_task import ReviewTask
@@ -66,6 +66,24 @@ class ReviewService:
         task.current_stage = stage
         task.started_at = datetime.now(UTC)
         task.attempt_count += 1
+        task.version += 1
+        self._repository.commit()
+        return task
+
+    def begin_attempt(self, task_id: UUID, stage: str = "starting_pipeline") -> ReviewTask:
+        task = self._get_for_update(task_id)
+        if task.status == ReviewStatus.QUEUED:
+            ensure_transition(task.status, ReviewStatus.RUNNING)
+            task.status = ReviewStatus.RUNNING
+            task.started_at = task.started_at or datetime.now(UTC)
+        elif task.status != ReviewStatus.RUNNING:
+            raise InvalidStateTransition(
+                f"Cannot begin a review attempt while task is {task.status}"
+            )
+        task.current_stage = stage
+        task.attempt_count += 1
+        task.error_code = None
+        task.error_message = None
         task.version += 1
         self._repository.commit()
         return task
