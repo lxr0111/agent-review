@@ -115,4 +115,6 @@ pytest
 - `app/providers`: GitHub, LLM, and parser adapters
 - `app/workers`: Celery entry points
 
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete roadmap.
+See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete roadmap and
+[PHASE1_IMPLEMENTATION_AND_INTERVIEW_GUIDE.md](PHASE1_IMPLEMENTATION_AND_INTERVIEW_GUIDE.md)
+for the implemented Phase 0–1 architecture and interview guide.
