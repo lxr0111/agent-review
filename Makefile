@@ -10,7 +10,7 @@ format:
 	ruff format .
 
 typecheck:
-	mypy app
+	mypy app evals
 
 test:
 	pytest
