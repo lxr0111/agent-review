@@ -571,7 +571,88 @@ git diff --check: passed
 Mock CLI smoke test: passed; usage/cost remained null
 ```
 
-截至本节更新时，live runner 和 baseline persistence 已完成代码与 Mock/Fake Provider 测试，但尚未调用真实 DeepSeek，也没有生成真实模型 baseline。
+这一阶段先用 Mock/Fake Provider 完成安全机制验证；真实 DeepSeek 结果单独记录在下一节，避免把自动化验证与真实模型证据混为一谈。
+
+---
+
+### 3.9 首次 DeepSeek 10-case Baseline 实测
+
+#### 执行顺序
+
+先执行单案例低成本试跑：
+
+```powershell
+python -m evals.runner --provider deepseek --live --max-cases 1
+```
+
+试跑成功识别空列表除零问题，结构化输出、usage 解析和安全开关均正常。随后在干净工作区执行完整评测：
+
+```powershell
+python -m evals.runner --provider deepseek --live --save-baseline
+```
+
+Baseline 原始结果保存为：
+
+```text
+evals/baselines/deepseek-flash__review-v1__seed-v1.json
+```
+
+#### 可复现元数据
+
+```text
+Provider: deepseek
+Model: deepseek-flash
+Prompt version: review-v1
+Dataset version: seed-v1
+Dataset SHA-256: dcb3cd4af05dd8670b6da06c81dd51d719cf948264dc51c4da7cc66edf956e2d
+Git commit: 4274964e5b6fe07ed45b3cf359acb5b2b8cc9a33
+Git dirty: false
+Executed cases: 10/10
+```
+
+#### 真实模型结果
+
+```text
+Successful cases: 10/10
+Transport errors: 0
+Provider errors: 0
+Schema errors: 0
+Schema validity: 1.0
+
+Expected findings: 8
+Matched findings: 8
+Recall: 1.0
+Category match: 1.0
+Severity match: 0.25
+False positives: 10
+False positives per case: 1.0
+Negative-sample false positives: 4
+Case pass rate: 0.1
+
+Latency mean: 4187.20 ms
+Latency P50: 3324.53 ms
+Latency P95: 8722.74 ms
+Input tokens: 6623
+Output tokens: 7707
+Total tokens: 14330
+Cost: unavailable
+```
+
+#### 如何解释结果
+
+- DeepSeek 找到了全部 8 个预期缺陷，且 Finding category 全部正确；
+- 只有 2 个匹配 Finding 的 severity 与期望一致，模型整体倾向于把问题评得更严重；
+- 额外 Finding 主要来自泛化的“缺少测试”建议，以及对 negative sample 契约的额外质疑；
+- 两个 negative samples 共出现 4 个额外 Finding，说明当前 Prompt 和样例上下文还不能稳定抑制噪声；
+- 这份 baseline 的价值不是证明模型已经足够好，而是为 Prompt v2、Matcher 和后续 Agent 改造提供固定对照组。
+
+#### 准确边界
+
+- 这是 10 个手工种子案例上的结果，不能外推为生产环境整体质量；
+- 当前没有计算价格，因此不能声称完成成本优化；
+- 当前 Case Pass 是严格指标：预期 Finding 全部命中、没有额外 Finding，且 category/severity 均正确；
+- 目前没有行号输出，所以没有计算范围命中率；
+- 后续如修改数据集标签或内容，必须升级 Dataset Version，不能直接覆盖这份结果。
 
 ---
 
@@ -610,7 +691,9 @@ Mock CLI smoke test: passed; usage/cost remained null
 - 确定性 Matcher；
 - Recall、误报、类别、严重程度、Schema、Case Pass 和 latency 指标；
 - Mock evaluator self-test；
-- Provider token usage 数据通道。
+- Provider token usage 数据通道；
+- 显式开启的 DeepSeek Live Eval；
+- 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline。
 
 ### 4.4 安全边界
 
@@ -708,13 +791,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 > 搭建兼容 Responses API 的可控故障注入环境，验证 Timeout、429、500/503 的自动恢复、指数退避和 Retry-After 感知，以及 401 和非法结构化输出的快速失败；可恢复场景最终仅保留一份 Report、Publication 和 GitHub Review。
 
-> 建立包含 correctness、security、performance、maintainability、reliability 和 negative samples 的 10 案例评测种子集，实现同文件文本匹配、一对一 Finding 对齐及 Recall、误报、类别、严重程度、Schema 和 Case Pass 指标，为 Prompt 和 Agent 架构迭代提供回归基础。
+> 建立包含 correctness、security、performance、maintainability、reliability 和 negative samples 的 10 案例评测种子集，实现同文件文本匹配、一对一 Finding 对齐及 Recall、误报、类别、严重程度、Schema 和 Case Pass 指标；保存绑定 Git、Dataset、Prompt 和 Model 版本的 DeepSeek baseline，为 Prompt 和 Agent 架构迭代提供回归基础。
 
 暂时不要写入简历的内容：
 
 - “多 Agent 已实现”；
 - “行级评论已实现”；
-- “达到某个真实模型 Recall/Precision”；
+- 把 10 个种子案例的指标泛化为生产环境整体模型质量；
 - “生产级高并发”；
 - “LLM Exactly Once”；
 - “Token 成本已经优化”；
@@ -754,7 +837,10 @@ git diff --check: passed
 - DeepSeek 真实识别空列表除零问题；
 - Webhook Redelivery 业务幂等实测通过；
 - 六类故障/恢复场景实测通过；
-- 数据库只读检查和唯一索引检查通过。
+- 数据库只读检查和唯一索引检查通过；
+- DeepSeek 单案例 Live Eval 试跑成功，usage 元数据正常；
+- DeepSeek 完整 10-case baseline 已保存，运行时工作区干净并绑定 Git commit `4274964`；
+- 完整评测 10/10 获得合法响应，无 Transport、Provider 或 Schema 错误。
 
 ---
 
@@ -762,15 +848,14 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交受保护的 DeepSeek live eval 和 baseline persistence；
-2. 先使用 `--max-cases 1` 执行一次低成本真实试跑；
-3. 确认输出与 token usage 后执行完整 10-case baseline；
-4. 使用显式价格快照计算 cost，不在 Provider 中硬编码价格；
-5. 用第一次真实 baseline 审核 Matcher、种子案例和标签是否需要调整。
+1. 提交首次 DeepSeek baseline 和本次真实评测记录；
+2. 基于 baseline 设计 Prompt v2，重点校准 severity 并减少泛化的“缺少测试”意见；
+3. 审核 negative samples 的契约和上下文，修改时升级 Dataset Version；
+4. 增加 baseline 对比报告和回归阈值；
+5. 使用显式价格快照计算 cost，不在 Provider 中硬编码价格。
 
 ### 9.2 后续能力
 
-- 真实 DeepSeek 10-case baseline；
 - Baseline 对比和回归阈值；
 - 行级 Finding 和 GitHub inline comment；
 - 更大、更接近真实 PR 的评测集；

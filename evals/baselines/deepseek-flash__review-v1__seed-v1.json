@@ -1,0 +1,583 @@
+{
+  "baseline_schema_version": "agent-review-model-baseline-v1",
+  "evaluation": {
+    "run_kind": "live_evaluation",
+    "provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "prompt_version": "review-v1",
+    "is_model_baseline": true,
+    "schema_version": "review-eval-v1",
+    "dataset_version": "seed-v1",
+    "dataset_sha256": "dcb3cd4af05dd8670b6da06c81dd51d719cf948264dc51c4da7cc66edf956e2d",
+    "dataset_case_count": 10,
+    "executed_case_count": 10,
+    "git_commit": "4274964e5b6fe07ed45b3cf359acb5b2b8cc9a33",
+    "git_dirty": false,
+    "executed_at": "2026-09-25T02:50:11.769816Z",
+    "cases": [
+      {
+        "case_id": "correctness-empty-average",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2804.6002000000954,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The PR adds a single `calculate_average` helper in `src/statistics.py`. The implementation is straightforward but crashes on empty input because it divides by `len(values)` without checking for zero, and no tests were added for the new helper.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "ZeroDivisionError on empty input",
+            "explanation": "`calculate_average` returns `total / len(values)` without guarding against an empty sequence. For `values == []`, `sum([])` is `0` and `len([])` is `0`, so the call raises `ZeroDivisionError: division by zero`. This is a readily hit edge case for any caller that aggregates a possibly-empty collection (e.g. a window with no samples), and the raw ZeroDivisionError is a confusing failure mode for callers.",
+            "suggestion": "Handle the empty case explicitly, for example: `if not values: return 0.0` (or `raise ValueError(\"calculate_average() arg is an empty sequence\")` if an empty input should be an error). Pick the semantics you want, document them in a docstring, and test both branches.",
+            "file_path": "src/statistics.py",
+            "severity": "high",
+            "category": "correctness",
+            "confidence": 0.95
+          },
+          {
+            "title": "New helper is untested",
+            "explanation": "The PR adds a new public function but no accompanying tests. There is no coverage for the normal case, the empty-input case, or non-numeric/iterable edge cases (e.g. passing a generator, which is consumed by `sum` leaving `len` to fail with `TypeError`).",
+            "suggestion": "Add unit tests covering a typical list of numbers, the empty sequence, a single element, and a generator/iterable input if that usage is intended (note `len()` requires a sized sequence; convert with `list(values)` first if generators must be supported).",
+            "file_path": "src/statistics.py",
+            "severity": "medium",
+            "category": "testing",
+            "confidence": 0.85
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "empty-input-zero-division",
+            "actual_title": "ZeroDivisionError on empty input",
+            "file_path": "src/statistics.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 3
+            },
+            "score": 0.925,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 637,
+          "output_tokens": 465,
+          "total_tokens": 1102,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "correctness-off-by-one",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2683.1303999997544,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change adds a `process_all` helper that iterates over a sequence and calls `process` on each element. The loop bound is off by one, so the final element is never processed, which contradicts the stated intent of processing every queued item. The helper also depends on a `process` name that is not defined or imported in the added file.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Off-by-one loop bound skips the last queued item",
+            "explanation": "`range(len(values) - 1)` produces indices `0 .. len(values) - 2`, so the last element of `values` is never passed to `process`. For a queue this silently drops the most recent item, and the bug is invisible for single-element (or empty) inputs, making it easy to miss in tests. This directly contradicts the PR's stated goal of processing every queued item.",
+            "suggestion": "Iterate over the values directly, or use the full length: `for value in values: process(value)` (equivalently `for index in range(len(values)):`). Add a test asserting that every element, including the last and a single-element list, is processed.",
+            "file_path": "src/batch.py",
+            "severity": "high",
+            "category": "correctness",
+            "confidence": 0.97
+          },
+          {
+            "title": "`process` is not defined or imported in this module",
+            "explanation": "The loop body calls `process(...)`, but the added file contains no definition or import for `process`. As written, calling `process_all` will raise `NameError` at the first iteration, so the function is not usable in its current form and cannot be validated by the reviewer without knowing where `process` comes from.",
+            "suggestion": "Add an explicit import for `process` (or accept it as a callable parameter/default), and cover it with a test that injects a stub to verify the call count and arguments.",
+            "file_path": "src/batch.py",
+            "severity": "medium",
+            "category": "maintainability",
+            "confidence": 0.75
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "last-item-skipped",
+            "actual_title": "Off-by-one loop bound skips the last queued item",
+            "file_path": "src/batch.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 3
+            },
+            "score": 0.9384615384615385,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 644,
+          "output_tokens": 529,
+          "total_tokens": 1173,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "security-sql-injection",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2465.326799999275,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change adds a single `find_user` helper that builds a SQL query via f-string interpolation of the caller-supplied `email` value, introducing a straightforward SQL injection vulnerability. No tests are included.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "SQL injection via f-string interpolation of `email`",
+            "explanation": "`src/users.py` constructs the query with `f\"SELECT * FROM users WHERE email = '{email}'\"`. Any caller-controlled `email` value (e.g. `' OR '1'='1`, `'; DROP TABLE users; --`) is embedded verbatim into the SQL text, allowing an attacker to alter the query, bypass authentication/lookup logic, read arbitrary rows, or execute stacked statements depending on the DB-API driver's capabilities. This is a classic CWE-89 SQL injection exposed by this new function.",
+            "suggestion": "Use parameterized queries and let the driver bind the value, e.g.:\n\n```python\ndef find_user(cursor, email):\n    query = \"SELECT * FROM users WHERE email = %s\"\n    return cursor.execute(query, (email,)).fetchone()\n```\n\nUse the placeholder style appropriate to the driver (`%s` for psycopg/MySQL, `?` for sqlite3). If the driver's `execute` does not accept parameters in the expected form, adapt accordingly, but never interpolate user input into SQL text. Additionally, consider validating the email format before querying.",
+            "file_path": "src/users.py",
+            "severity": "critical",
+            "category": "security",
+            "confidence": 1.0
+          },
+          {
+            "title": "No tests cover the new lookup helper",
+            "explanation": "The change adds a new public function `find_user` with no accompanying tests. Given the security-sensitive nature of the code (it builds and executes SQL from user input), the absence of tests means regressions such as reintroducing interpolation, or using a parameter tuple incorrectly, would go undetected.",
+            "suggestion": "Add unit tests that exercise `find_user` with a valid email and with injection-style inputs (e.g. `\"' OR '1'='1\"`) against a test database/sqlite fixture, asserting that only exact matches are returned and that the table is not manipulated.",
+            "file_path": "src/users.py",
+            "severity": "medium",
+            "category": "testing",
+            "confidence": 0.8
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "email-sql-injection",
+            "actual_title": "SQL injection via f-string interpolation of `email`",
+            "file_path": "src/users.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 3
+            },
+            "score": 0.9666666666666668,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 650,
+          "output_tokens": 507,
+          "total_tokens": 1157,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "security-path-traversal",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 4803.332700000283,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The new `read_upload` helper in src/uploads.py constructs a filesystem path by concatenating a fixed upload root with an unvalidated, caller-supplied `filename`, then reads and returns the bytes. This exposes the service to path traversal (e.g. `../../etc/passwd`) and, because `Path.__truediv__` ignores the base when the right operand is absolute, to reading arbitrary absolute paths (e.g. `/etc/shadow`). The change should not be merged without canonicalizing and constraining the resolved path to the upload root.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Arbitrary file read via path traversal in read_upload",
+            "explanation": "`read_upload` joins an attacker-controlled `filename` onto `UPLOAD_ROOT` without any normalization or containment check. Two distinct escapes are possible: (1) relative traversal, since `Path('/srv/uploads') / '../../etc/passwd'` resolves to `/etc/passwd`; (2) absolute-path override, since `Path('/srv/uploads') / '/etc/shadow'` returns `/etc/shadow` because the left operand is discarded when the right operand is absolute. Because the function directly returns `read_bytes()`, a caller can exfiltrate any file the process can read, and the raw traceback/exception may also leak path existence information. `UPLOAD_ROOT = Path('/srv/uploads')` is also not resolved, so symlinks or a symlinked upload entry can escape the root even if a lexical check is later added.",
+            "suggestion": "Resolve both sides and enforce containment on the canonical path before reading, e.g.:\n\n```python\nUPLOAD_ROOT = Path('/srv/uploads').resolve()\n\ndef read_upload(filename: str) -> bytes:\n    if not filename or '\\x00' in filename:\n        raise ValueError('invalid filename')\n    target = (UPLOAD_ROOT / filename).resolve()\n    if target != UPLOAD_ROOT and UPLOAD_ROOT not in target.parents:\n        raise ValueError('invalid filename')\n    if not target.is_file():\n        raise FileNotFoundError(filename)\n    return target.read_bytes()\n```\n\nOn Python 3.9+ the containment check can be written as `target.is_relative_to(UPLOAD_ROOT)`. Also reject absolute paths and `os.sep`/`..` components early, and avoid surfacing raw OS errors to the client.",
+            "file_path": "src/uploads.py",
+            "severity": "critical",
+            "category": "security",
+            "confidence": 0.97
+          },
+          {
+            "title": "No test coverage for traversal and absolute-path inputs",
+            "explanation": "This is a new public-facing read path with security-sensitive input handling, yet the change adds no tests. Without regression tests, the traversal and absolute-path behaviors above can easily be reintroduced or left unfixed during refactoring.",
+            "suggestion": "Add unit tests covering a legitimate filename, `../` traversal (`../secret`, `../../etc/passwd`), an absolute filename (`/etc/passwd`), URL-encoded traversal if the value can arrive encoded, symlink escape, and empty/NUL-containing input, asserting that only files under the resolved `UPLOAD_ROOT` are readable and that out-of-root attempts are rejected.",
+            "file_path": "src/uploads.py",
+            "severity": "medium",
+            "category": "testing",
+            "confidence": 0.85
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "uncontained-upload-path",
+            "actual_title": "Arbitrary file read via path traversal in read_upload",
+            "file_path": "src/uploads.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9400000000000001,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 653,
+          "output_tokens": 939,
+          "total_tokens": 1592,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "performance-n-plus-one",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3479.202599999553,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change adds load_orders_with_customers, which fetches every order and then issues a separate primary-key lookup for each order's customer. This is a textbook N+1 query pattern introduced by the patch, and it may also silently attach None when a customer_id is missing. No test coverage accompanies the new data-loading path.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "N+1 query pattern when attaching customers to orders",
+            "explanation": "load_orders_with_customers first loads all orders, then calls db.get(Customer, order.customer_id) once per order inside the loop. For N orders this executes 1 + N round trips to the database, which scales linearly with result-set size and will be a significant performance problem for large order lists (and is the kind of issue eager-loading APIs are designed to avoid).",
+            "suggestion": "Load customers in the same query via eager loading, e.g. db.query(Order).options(joinedload(Order.customer)) / selectinload(Order.customer) with SQLAlchemy, or batch the customer IDs into a single IN query and map them back to orders. Avoid per-row db.get inside a loop.",
+            "file_path": "src/orders.py",
+            "severity": "high",
+            "category": "performance",
+            "confidence": 0.95
+          },
+          {
+            "title": "Missing test coverage for the new loading function",
+            "explanation": "The patch only adds the implementation; there is no accompanying test asserting that each order actually receives the correct customer. Without a test, the N+1 behavior and any mapping mistakes (e.g. a null customer for a missing customer_id) can regress unnoticed, and the intended contract of the function is undocumented.",
+            "suggestion": "Add a test that seeds orders and customers in a test database, calls load_orders_with_customers, and asserts each order.customer matches the expected record — ideally also asserting the query count (e.g. via SQLAlchemy event hooks) to lock in the eager-loading fix.",
+            "file_path": "src/orders.py",
+            "severity": "low",
+            "category": "testing",
+            "confidence": 0.6
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "customer-n-plus-one",
+            "actual_title": "N+1 query pattern when attaching customers to orders",
+            "file_path": "src/orders.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9384615384615385,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 667,
+          "output_tokens": 626,
+          "total_tokens": 1293,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "performance-quadratic-membership",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3924.801699999989,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The change adds a single helper `find_duplicates` that returns each value appearing more than once in the input list while preserving first-seen order. The logic is functionally correct for typical inputs, but it implements duplicate detection with two nested linear scans, giving quadratic time complexity on large inputs — the pattern this change is specifically built around.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Quadratic duplicate detection via repeated count and list membership",
+            "explanation": "`values.count(value)` performs a full O(n) scan of the input for every element, making the loop O(n²). Additionally, `value not in duplicates` performs a linear scan of the growing result list on every iteration, compounding the cost (worst case O(n²) more, e.g. an input of all-distinct values followed by many duplicates). For large lists this is a significant slowdown compared to a single-pass counting approach, and the dedup-membership check is unnecessary work that a hash-based structure eliminates for free.",
+            "suggestion": "Use a single pass with a hash-based counter, e.g. `from collections import Counter; counts = Counter(values)` and then build the result preserving order: `seen = set(); result = []` iterating once, or `[v for v, c in counts.items() if c > 1]` if input order in the output is acceptable. Alternatively track counts and an output `set` in one pass to keep O(n) time.",
+            "file_path": "src/duplicates.py",
+            "severity": "medium",
+            "category": "performance",
+            "confidence": 0.95
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "repeated-linear-count",
+            "actual_title": "Quadratic duplicate detection via repeated count and list membership",
+            "file_path": "src/duplicates.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9384615384615385,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 670,
+          "output_tokens": 635,
+          "total_tokens": 1305,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "maintainability-duplicated-rule",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3106.93960000026,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change adds three channel-specific free-shipping helpers in src/shipping.py. Each function independently hardcodes the same eligibility rule (order_total >= 100). The behavior is correct, but the business threshold is now duplicated in three places, so any future policy change (e.g., threshold adjustment, handling of None/negative values, currency or membership rules) must be edited in three locations and can silently drift between channels.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Free-shipping rule duplicated across three channel functions",
+            "explanation": "web_free_shipping, mobile_free_shipping, and partner_free_shipping each re-implement the same rule `order_total >= 100`. This is a single business policy duplicated three times. If the threshold or the predicate changes (e.g., threshold becomes 75, or a membership/currency condition is added), it must be updated in every copy; missing one silently produces inconsistent shipping promises between web, mobile, and partner channels, which is a customer-facing correctness risk rather than just a style issue. The channel wrappers also add no behavior of their own, so the duplication is pure redundant surface area.",
+            "suggestion": "Extract the shared rule once, e.g. `FREE_SHIPPING_THRESHOLD = 100` plus `def is_free_shipping(order_total): return order_total >= FREE_SHIPPING_THRESHOLD`, and have each channel function delegate to it (or expose a single shared function if per-channel aliases are only needed for compatibility). Add a small test asserting the threshold boundary (99/100) so future policy changes are caught in one place.",
+            "file_path": "src/shipping.py",
+            "severity": "medium",
+            "category": "maintainability",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "copied-shipping-threshold",
+            "actual_title": "Free-shipping rule duplicated across three channel functions",
+            "file_path": "src/shipping.py",
+            "expected_range": {
+              "start_line": 1,
+              "end_line": 8
+            },
+            "score": 0.5384615384615385,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 691,
+          "output_tokens": 494,
+          "total_tokens": 1185,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "reliability-unclosed-file",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3324.5280999999522,
+        "expected_finding_count": 1,
+        "actual_finding_count": 2,
+        "matched_finding_count": 1,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": false,
+        "summary": "The change adds a small `load_config` helper that reads a JSON file from disk. The implementation leaks the file handle: `open()` is called without a context manager and the handle is never closed, so file descriptors remain open until garbage collection (and may not be reclaimed promptly on CPython, and not at all deterministically on other runtimes). There are no tests accompanying the new helper.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "File handle is never closed in load_config",
+            "explanation": "`handle = open(path, encoding='utf-8')` returns an open file object that is never explicitly closed. Because `json.load(handle)` is returned directly, no `close()` call and no context manager is used. If the JSON is malformed, `json.load` raises and the handle is leaked even on CPython (closed only later by the garbage collector); if it succeeds, the handle stays open until the object is collected. Repeated calls therefore accumulate open file descriptors, which can exhaust the process's FD limit and cause unrelated I/O failures, especially in long-running services or on non-refcounting interpreters. It also leaves the file locked on platforms with mandatory/shared locking (e.g., Windows).",
+            "suggestion": "Use a context manager so the handle is always released, even on exceptions:\n\n```python\nimport json\n\n\ndef load_config(path):\n    with open(path, encoding='utf-8') as handle:\n        return json.load(handle)\n```",
+            "file_path": "src/config_loader.py",
+            "severity": "medium",
+            "category": "reliability",
+            "confidence": 0.95
+          },
+          {
+            "title": "No test coverage for the new config loader",
+            "explanation": "The PR adds a new public helper (`load_config`) with no accompanying tests. The resource-leak behavior above would be easy to catch with a test that asserts the file is closed after the call (e.g., checking `handle.closed` via a mock/patch of `open`, or asserting no FD growth across repeated calls). Without tests, regressions in error handling and resource management go unnoticed.",
+            "suggestion": "Add unit tests covering: successful load of a valid JSON file, behavior on a missing path (`FileNotFoundError`), behavior on malformed JSON (`json.JSONDecodeError`), and that the underlying file object is closed after the call (e.g., patch `builtins.open` and assert `mock_handle.close.called` or `closed is True`).",
+            "file_path": "src/config_loader.py",
+            "severity": "low",
+            "category": "testing",
+            "confidence": 0.8
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "file-handle-not-closed",
+            "actual_title": "File handle is never closed in load_config",
+            "file_path": "src/config_loader.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 5
+            },
+            "score": 0.9571428571428572,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 652,
+          "output_tokens": 590,
+          "total_tokens": 1242,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "negative-safe-average",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 6557.426600000326,
+        "expected_finding_count": 0,
+        "actual_finding_count": 3,
+        "matched_finding_count": 0,
+        "false_positive_count": 3,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The new `calculate_average` helper adds a small guard for empty input, but its contract is ambiguous and it is not robust to common input types. It silently returns `None` on empty input rather than signaling an error, `if not values` is unreliable for iterators/generators and array-like objects, and no tests accompany the new function. The change is tiny and the arithmetic itself is correct for plain non-empty sequences of numbers.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Returning None from an average function is an unsafe sentinel",
+            "explanation": "`calculate_average` returns `None` when `values` is empty, silently conflating \"no data\" with a valid result. Callers that treat the return value as a number (e.g. `calculate_average(x) + 1`, comparisons, formatting) will fail later with an unrelated `TypeError`/`ValueError`, and the failure is far from the source. The function's own name/purpose suggests a numeric result, so the empty-input contract is surprising and undocumented.",
+            "suggestion": "Make the contract explicit: raise a documented exception (e.g. `ValueError(\"values must not be empty\")`), or return a neutral numeric value such as `0.0` if that is the intended policy. Add a docstring stating the behavior for empty input and the expected element type, and consider type hints (`values: Sequence[float]) -> float`).",
+            "file_path": "src/safe_statistics.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.7
+          },
+          {
+            "title": "Empty check and len() break for iterators and array-like inputs",
+            "explanation": "`if not values` relies on truthiness, which is wrong for several common inputs. A generator/iterator is always truthy, so an empty generator skips the guard and then `len(values)` raises `TypeError`. For NumPy-style arrays, `not values` raises `ValueError` for multi-element arrays, and `sum()`/`len()` semantics also differ. For sets/dicts the averaging behavior over keys is likely unintended.",
+            "suggestion": "Normalize the input first, e.g. `values = list(values)` (or use `len(values) == 0` after documenting that only sized sequences are supported). If arbitrary iterables are meant to be supported, materialize once and operate on the resulting list; document the accepted input types.",
+            "file_path": "src/safe_statistics.py",
+            "severity": "medium",
+            "category": "reliability",
+            "confidence": 0.6
+          },
+          {
+            "title": "No tests added for the new function",
+            "explanation": "The PR introduces a new public function with a distinct empty-input branch, but no tests are included. The guard branch is exactly the behavior this change is about, so it should be verified along with the non-empty path and the input-type edge cases (iterators, non-numeric elements, integer division behavior in Python 3).",
+            "suggestion": "Add unit tests covering: a normal non-empty list returning the expected float, the empty-container branch (whatever contract is chosen), generator/iterator input if supported, and invalid element types.",
+            "file_path": "src/safe_statistics.py",
+            "severity": "low",
+            "category": "testing",
+            "confidence": 0.55
+          }
+        ],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 641,
+          "output_tokens": 1194,
+          "total_tokens": 1835,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "negative-parameterized-query",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 8722.737899999629,
+        "expected_finding_count": 0,
+        "actual_finding_count": 1,
+        "matched_finding_count": 0,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change adds `find_user`, which builds a SQL query with a string-interpolated `ORDER BY` clause. The interpolation is safe: `sort` is never concatenated directly—it is looked up in the fixed `ALLOWED_SORTS` allowlist, and only a hard-coded column name ('created_at'/'display_name') is interpolated, with an explicit `ValueError` for unknown values. The `email` value is passed correctly as a bound parameter via `%s`. So there is no SQL-injection issue here, and I am not reporting one. The only concern I can substantiate is the method-chaining on `cursor.execute(...).fetchall()`, which is driver-dependent (see finding).",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v1",
+        "actual_findings": [
+          {
+            "title": "Chained `.fetchall()` on `cursor.execute()` depends on a non-standard return value",
+            "explanation": "`cursor.execute(...).fetchall()` assumes `execute` returns the cursor so `fetchall` can be chained. With the `%s` paramstyle used here (i.e. psycopg2/mysqlclient-style drivers), `execute` does not return the cursor: psycopg2 returns `None` and mysqlclient returns the affected-row count, so `.fetchall()` would raise `AttributeError`/`TypeError` at runtime. Only drivers that return the cursor (e.g. Python's `sqlite3`, which uses `?` placeholders rather than `%s`) support this chaining. Because the placeholder style indicates a non-sqlite driver, this call is likely to fail in production.",
+            "suggestion": "Split the call into two statements to be driver-agnostic: `cursor.execute('SELECT ...', (email,))` followed by `return cursor.fetchall()` (or keep chaining only if the target driver is guaranteed to return the cursor).",
+            "file_path": "src/safe_users.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.5
+          }
+        ],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 718,
+          "output_tokens": 1728,
+          "total_tokens": 2446,
+          "cost_usd": null
+        }
+      }
+    ],
+    "metrics": {
+      "total_cases": 10,
+      "successful_cases": 10,
+      "transport_errors": 0,
+      "provider_errors": 0,
+      "schema_errors": 0,
+      "passed_cases": 1,
+      "case_pass_rate": 0.1,
+      "expected_findings": 8,
+      "matched_findings": 8,
+      "recall": 1.0,
+      "false_positives": 10,
+      "false_positives_per_case": 1.0,
+      "negative_sample_false_positives": 4,
+      "category_match": 1.0,
+      "severity_match": 0.25,
+      "schema_validity": 1.0,
+      "latency_mean_ms": 4187.202659999912,
+      "latency_p50_ms": 3324.5280999999522,
+      "latency_p95_ms": 8722.737899999629,
+      "usage": {
+        "input_tokens": 6623,
+        "output_tokens": 7707,
+        "total_tokens": 14330,
+        "cost_usd": null
+      }
+    }
+  }
+}
