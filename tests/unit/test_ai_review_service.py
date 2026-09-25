@@ -14,6 +14,7 @@ from app.domain.review.report import (
     ReviewRiskLevel,
 )
 from app.providers.llm import LLMProvider, MockLLMProvider
+from app.providers.llm.prompt_builder import PROMPT_VERSION
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.services.ai_review_service import AIReviewService
@@ -100,7 +101,7 @@ def test_ai_review_maps_valid_output_to_domain_report() -> None:
     assert report.risk_level == ReviewRiskLevel.HIGH
     assert report.findings[0].severity == FindingSeverity.HIGH
     assert report.model_name == "test-model"
-    assert report.prompt_version == "review-v1"
+    assert report.prompt_version == PROMPT_VERSION
     assert report.reviewed_file_count == 1
     assert len(provider.prompts) == 1
 

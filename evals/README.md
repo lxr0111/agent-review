@@ -4,6 +4,9 @@
 uses a case-specific mock response to test the evaluator, matcher, and metric calculations.
 Its result is an evaluator self-test, not a model-quality baseline.
 
+The current code uses prompt version `review-v2`. The checked-in `review-v1` baseline remains an
+immutable historical reference; a `review-v2` baseline has not been generated yet.
+
 Run it from the repository root:
 
 ```powershell

@@ -721,6 +721,67 @@ review-v1 negative-sample case pass rate: 0.0
 
 ---
 
+### 3.11 Prompt v2：证据约束、降噪与 Severity 校准
+
+#### Baseline 暴露的问题
+
+首次 `review-v1 + seed-v1` 真实 baseline 的 Recall 和 Category Match 都是 `1.0`，但产生 10 个额外 Finding、两个 negative samples 上产生 4 个误报，Severity Match 只有 `0.25`。逐案例检查发现两个主要原因：
+
+- 原 Prompt 明确要求优先关注 `missing tests`，模型几乎为每段新增代码额外生成一条“缺少测试”；
+- 原 Prompt 没有 Severity 定义，模型把除零、off-by-one、N+1 等有界问题普遍提高为 `high`，把 SQL 注入和目录穿越提高为 `critical`。
+
+此外，模型还会因为 Diff 缺少仓库上下文而推测函数未定义、数据库 Driver 返回值不兼容，或把 PR 已明确声明的 `None` 返回契约当成缺陷。
+
+#### Prompt v2 设计
+
+Prompt Version 从 `review-v1` 升级为 `review-v2`，但不修改输出 Schema、Provider、Pipeline 或 Dataset。
+
+新增 Evidence Policy：
+
+- 只报告能够由当前 PR 数据直接支持的问题；
+- 允许返回空 Finding；
+- 尊重 PR 标题和描述中明确声明的行为契约；
+- Diff 中看不到定义不代表函数、变量、Import 或类型不存在；
+- 不推测未提供的 Library、Database Driver、Framework、Runtime 或输入类型行为；
+- 低于 `0.80` confidence 的问题应省略。
+
+新增 Finding Policy：
+
+- 一个根因只生成一个 Finding；
+- 不得仅因没有测试就创建独立 Finding；
+- 对真实代码缺陷的回归测试建议应放在该 Finding 的 suggestion 中；
+- Testing Finding 仅用于变更后的测试代码本身错误，或 PR 明确声称的测试/覆盖承诺与 Diff 冲突。
+
+新增 Severity Rubric：
+
+- `critical`：现实可利用、系统级失陷、重大敏感数据泄露等灾难性影响，且缺少有效前置限制；
+- `high`：现实条件下的严重安全漏洞、数据损坏/丢失、鉴权失败或大范围生产故障；
+- `medium`：可复现功能失败、有界的可靠性/资源问题或显著性能问题；
+- `low`：不立即造成生产错误的局部客观维护性或测试问题；
+- 严重程度必须依据已证明的实际影响，不能依据 Category 或假设的最坏情况。
+
+#### 兼容性
+
+- 生产 `AIReviewService` 和 Pipeline 仍使用相同接口；
+- 结构化输出 Schema 没有变化；
+- 历史 `review-v1` baseline 保持不变；
+- 新 baseline 默认文件名将包含 `review-v2`，不会覆盖旧结果；
+- `seed-v1` 内容和 SHA-256 不变，因此可以用 Comparator 做同数据集对比。
+
+#### 自动化验证结果
+
+```text
+Prompt/AI/Eval targeted tests: 44 passed
+All tests: 198 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (84 source files)
+git diff --check: passed
+```
+
+截至本节更新时，只完成了 Prompt v2 代码和自动化验证，尚未调用真实 DeepSeek，也尚未生成 `review-v2` baseline。Prompt 是否真正改善误报和 Severity，必须由下一次相同 `seed-v1` 的真实运行证明。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -759,7 +820,8 @@ review-v1 negative-sample case pass rate: 0.0
 - Provider token usage 数据通道；
 - 显式开启的 DeepSeek Live Eval；
 - 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline；
-- 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator。
+- 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator；
+- 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2。
 
 ### 4.4 安全边界
 
@@ -883,12 +945,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Usage metadata | 182 | OpenAI、DeepSeek、Mock、AI Service、Pipeline、Eval 回归 |
 | 受保护的 Live Eval | 192 | 显式 live 开关、低成本试跑、Baseline 安全写入与可复现元数据 |
 | Baseline Comparator | 197 | Dataset 身份校验、派生指标、逐案例 Finding 与标签差异 |
+| Prompt v2 | 198 | 证据约束、测试降噪、上下文边界与 Severity Rubric |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 32 passed
-All tests: 197 passed, 2 third-party deprecation warnings
+Prompt/AI/Eval targeted tests: 44 passed
+All tests: 198 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (84 source files)
 git diff --check: passed
@@ -915,9 +978,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交离线 Baseline Comparator；
-2. 基于 baseline 设计 Prompt v2，重点校准 severity 并减少泛化的“缺少测试”意见；
-3. 生成 review-v2 + seed-v1 baseline，并与 review-v1 做离线比较；
+1. 提交 Prompt v2；
+2. 使用 `--max-cases 1` 做一次低成本真实试跑，检查 Severity 和额外测试 Finding；
+3. 生成完整 `review-v2 + seed-v1` baseline，并与 `review-v1` 做离线比较；
 4. 审核 negative samples 的契约和上下文，修改时升级 Dataset Version；
 5. 在获得更多历史结果后定义回归阈值，并使用显式价格快照计算 cost。
 

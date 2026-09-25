@@ -171,7 +171,7 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
     assert result.run_kind == "live_evaluation"
     assert result.provider == "deepseek"
     assert result.model_name == "usage-test-model"
-    assert result.prompt_version == "review-v1"
+    assert result.prompt_version == "review-v2"
     assert result.is_model_baseline is False
     assert result.dataset_case_count == 10
     assert result.executed_case_count == 1

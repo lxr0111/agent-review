@@ -64,6 +64,22 @@ def test_prompt_serializes_repository_content_as_data() -> None:
     assert payload["reviewable_files"][0]["patch"] == context.reviewable_files[0].patch
 
 
+def test_prompt_v2_defines_evidence_noise_and_severity_policy() -> None:
+    prompt = ReviewPromptBuilder().build(_context())
+
+    assert prompt.version == "review-v2"
+    assert "Returning no findings is valid" in prompt.system
+    assert "Treat an explicit behavior contract" in prompt.system
+    assert "A symbol not defined in the patch may exist in unchanged code" in prompt.system
+    assert "Do not assume library, database-driver, framework" in prompt.system
+    assert "Do not create a standalone finding solely because tests are absent" in prompt.system
+    assert "Report one finding per root cause" in prompt.system
+    assert "critical: reserve for realistically exploitable changes" in prompt.system
+    assert "medium: a reproducible functional failure" in prompt.system
+    assert "Choose severity from demonstrated impact" in prompt.system
+    assert "findings below 0.80 confidence" in prompt.system
+
+
 def test_prompt_does_not_include_patch_content_from_skipped_files() -> None:
     payload = json.loads(ReviewPromptBuilder().build(_context()).user)
 
