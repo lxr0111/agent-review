@@ -1,11 +1,12 @@
 import math
+from datetime import datetime
 from enum import StrEnum
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.review.exceptions import ReviewOutputValidationError
-from app.domain.review.report import ReviewReport
+from app.domain.review.report import FindingCategory, FindingSeverity, ReviewReport
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
 from app.providers.llm.protocol import LLMTokenUsage
 from evals.matcher import match_findings
@@ -40,6 +41,18 @@ class FindingMatchDetail(BaseModel):
     severity_match: bool
 
 
+class EvaluatedFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    explanation: str
+    suggestion: str
+    file_path: str
+    severity: FindingSeverity
+    category: FindingCategory
+    confidence: float = Field(ge=0, le=1)
+
+
 class CaseEvaluation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +68,10 @@ class CaseEvaluation(BaseModel):
     category_match_count: int = Field(ge=0)
     severity_match_count: int = Field(ge=0)
     case_pass: bool
+    summary: str | None = None
+    model_name: str | None = None
+    prompt_version: str | None = None
+    actual_findings: tuple[EvaluatedFinding, ...] = ()
     matches: tuple[FindingMatchDetail, ...] = ()
     error_type: str | None = None
     usage: EvalUsage = Field(default_factory=EvalUsage)
@@ -90,9 +107,17 @@ class EvaluationRun(BaseModel):
 
     run_kind: str
     provider: str
+    model_name: str | None
+    prompt_version: str
     is_model_baseline: bool
     schema_version: str
     dataset_version: str
+    dataset_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    dataset_case_count: int = Field(ge=1)
+    executed_case_count: int = Field(ge=1)
+    git_commit: str | None = None
+    git_dirty: bool | None = None
+    executed_at: datetime | None = None
     cases: tuple[CaseEvaluation, ...]
     metrics: AggregateMetrics
 
@@ -147,6 +172,21 @@ def successful_case_evaluation(
         category_match_count=category_matches,
         severity_match_count=severity_matches,
         case_pass=case_pass,
+        summary=report.summary,
+        model_name=report.model_name,
+        prompt_version=report.prompt_version,
+        actual_findings=tuple(
+            EvaluatedFinding(
+                title=finding.title,
+                explanation=finding.explanation,
+                suggestion=finding.suggestion,
+                file_path=finding.file_path,
+                severity=finding.severity,
+                category=finding.category,
+                confidence=finding.confidence,
+            )
+            for finding in report.findings
+        ),
         matches=tuple(details),
         usage=_eval_usage(usage),
     )

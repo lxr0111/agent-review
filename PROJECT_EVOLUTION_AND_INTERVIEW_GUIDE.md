@@ -500,6 +500,81 @@ git diff --check: passed
 
 ---
 
+### 3.8 受保护的 DeepSeek Live Eval 与 Baseline 写入
+
+#### 问题
+
+Eval Runner 已经能做 Mock self-test，但真实评测不能依赖 `.env` 中的 Provider 值自动触发，否则普通开发命令可能意外产生费用。同时，部分试跑、脏工作区和覆盖旧结果都会降低 baseline 的可复现性。
+
+#### 安全设计
+
+只有同时提供以下参数才会创建真实 DeepSeek Provider：
+
+```powershell
+python -m evals.runner --provider deepseek --live
+```
+
+保护规则包括：
+
+- 默认命令仍然只运行 Mock；
+- `--provider deepseek` 缺少 `--live` 时立即拒绝；
+- CLI 安全校验通过后才加载应用 Settings；
+- API Key 只能来自现有环境配置，不能作为 CLI 参数传入；
+- Eval 只构造 `ReviewContext` 并调用 `AIReviewService`，不连接数据库和 GitHub；
+- 案例按顺序执行，`--max-cases 1` 可用于低成本试跑；
+- Provider 在运行结束后关闭 HTTP Client；
+- 每个案例的异常转换为安全错误类型，不保存 Provider 错误消息。
+
+#### Baseline 保护
+
+只有完整的 DeepSeek live run 才能使用：
+
+```powershell
+python -m evals.runner --provider deepseek --live --save-baseline
+```
+
+保存规则：
+
+- Mock 结果不能保存为模型 baseline；
+- 使用 `--max-cases` 的部分运行不能保存；
+- 默认要求 Git 工作区干净，并且在产生模型费用前检查；
+- `--allow-dirty` 是显式例外，结果仍记录 `git_dirty=true`；
+- 输出使用新建模式，拒绝覆盖已有 baseline；
+- 默认文件名由 Model、Prompt Version 和 Dataset Version 组成；
+- 可以用 `--baseline-output` 指定另一个尚不存在的路径。
+
+Baseline 记录：
+
+- Provider、Model、Prompt Version；
+- Dataset Version、案例总数、实际执行数和 Dataset SHA-256；
+- Git commit、dirty 状态和 UTC 执行时间；
+- 每个案例的结构化 Finding、Matcher 结果、错误类型、latency 和 token usage；
+- 聚合 Recall、False Positive、Category/Severity Match、Schema Validity 和 Case Pass Rate。
+
+Baseline 不记录：
+
+- Seed case 的源代码 Patch；
+- 完整 Prompt；
+- `.env` 或任何环境变量；
+- API Key、Webhook Secret 或私钥；
+- Provider 原始错误消息；
+- 硬编码模型价格。
+
+#### 自动化验证结果
+
+```text
+Eval tests: 27 passed
+All tests: 192 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (82 source files)
+git diff --check: passed
+Mock CLI smoke test: passed; usage/cost remained null
+```
+
+截至本节更新时，live runner 和 baseline persistence 已完成代码与 Mock/Fake Provider 测试，但尚未调用真实 DeepSeek，也没有生成真实模型 baseline。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -657,14 +732,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | DeepSeek 与故障恢复阶段 | 159 | Provider、Fault Stub 和恢复测试 |
 | 第一批 Eval | 175 | Seed、Matcher、Metrics、Mock Runner |
 | Usage metadata | 182 | OpenAI、DeepSeek、Mock、AI Service、Pipeline、Eval 回归 |
+| 受保护的 Live Eval | 192 | 显式 live 开关、低成本试跑、Baseline 安全写入与可复现元数据 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 17 passed
-All tests: 182 passed, 2 third-party deprecation warnings
+Eval tests: 27 passed
+All tests: 192 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed
+mypy app evals: passed (82 source files)
 git diff --check: passed
 ```
 
@@ -686,10 +762,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 实现受保护的 DeepSeek live eval；
-2. 保存包含 Git SHA、Dataset SHA、Model、Prompt Version 和指标的 baseline；
-3. 使用显式价格快照计算 cost，不在 Provider 中硬编码价格；
-4. 用第一次真实 baseline 审核 Matcher、种子案例和标签是否需要调整。
+1. 提交受保护的 DeepSeek live eval 和 baseline persistence；
+2. 先使用 `--max-cases 1` 执行一次低成本真实试跑；
+3. 确认输出与 token usage 后执行完整 10-case baseline；
+4. 使用显式价格快照计算 cost，不在 Provider 中硬编码价格；
+5. 用第一次真实 baseline 审核 Matcher、种子案例和标签是否需要调整。
 
 ### 9.2 后续能力
 
