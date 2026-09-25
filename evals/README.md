@@ -16,6 +16,11 @@ The datasets have different roles:
   disjoint cases, including two negatives and two multi-file cases. Do not tune the prompt or
   rewrite labels from its model results; create a new dataset version for future changes.
 
+The first live `review-v2 + holdout-v1` baseline is checked in as
+`deepseek-flash__review-v2__holdout-v1.json`. Preserve its raw evaluator output. Manual review
+found two text-matcher misses and one supposedly negative fixture with a real missing-import
+defect; these are documented separately instead of rewriting the frozen dataset or baseline.
+
 The holdout file is guarded by a SHA-256 assertion in the unit tests. Run its offline evaluator
 self-test with:
 
@@ -23,7 +28,7 @@ self-test with:
 python -m evals.runner --dataset evals/cases/review_holdout_v1.json
 ```
 
-Run the first guarded live holdout baseline only after committing the frozen dataset:
+The command used to create a guarded live holdout baseline is:
 
 ```powershell
 python -m evals.runner `

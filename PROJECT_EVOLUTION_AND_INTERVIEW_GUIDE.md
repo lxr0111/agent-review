@@ -974,9 +974,171 @@ Holdout Mock CLI: 10/10 case pass, usage remained null
 
 - Holdout 仍是人工设计的 10 个小案例，不等于真实 PR 分布；
 - 文件在仓库中可见，属于工程上的冻结验证集，不是对开发者完全隐藏的盲测集；
-- 当前只完成 Mock self-test，尚无 DeepSeek holdout 结果；
+- 本节构建阶段只完成了 Mock self-test；真实 DeepSeek holdout 结果和审计记录在下一节；
 - 运行一次仍无法估计随机性，后续需要重复运行或更大的真实 PR 样本；
 - 在首次 live 结果产生前，不应根据猜测继续修改 Prompt v2。
+
+---
+
+### 3.14 首次 Holdout Baseline 与人工审计
+
+#### 执行原则
+
+`holdout-v1` 在提交 `a19c430` 后才第一次调用真实 DeepSeek。运行前没有继续修改 Prompt、Expected Finding、Matcher 或案例内容；运行时工作区干净。这样结果可以作为 Prompt v2 对新案例的第一次泛化证据，而不是又一次开发集调优结果。
+
+执行命令：
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_holdout_v1.json `
+  --provider deepseek `
+  --live `
+  --save-baseline
+```
+
+原始结果保存为：
+
+```text
+evals/baselines/deepseek-flash__review-v2__holdout-v1.json
+```
+
+#### 可复现元数据
+
+```text
+Provider: deepseek
+Model: deepseek-flash
+Prompt version: review-v2
+Dataset version: holdout-v1
+Dataset SHA-256: 9902805446cea36d711bdb8450f64609633ac6599099dc5810726c78f302567c
+Git commit: a19c4300282d650206a37b8637af9b88e55d4bd2
+Git dirty: false
+Dataset cases: 10
+Executed cases: 10
+Successful cases: 10
+Transport errors: 0
+Provider errors: 0
+Schema errors: 0
+```
+
+#### 原始自动评分
+
+以下数据来自当时冻结的 Dataset、Matcher 和 Metrics，原样保留：
+
+| 指标 | 结果 |
+|---|---:|
+| Recall | 0.75 |
+| Precision | 0.6667 |
+| F1 | 0.7059 |
+| Expected Findings | 8 |
+| Matched Findings | 6 |
+| False Positives | 3 |
+| Negative Sample False Positives | 1 |
+| Negative Sample Case Pass Rate | 0.5 |
+| Category Match | 0.8333 |
+| Severity Match | 0.5 |
+| Case Pass Rate | 0.3 |
+| Schema Validity | 1.0 |
+
+原始自动评分看起来明显低于 `seed-v1`，但不能直接得出“模型漏掉了两个问题、产生了三个错误 Finding”的结论。逐案例审计发现其中混合了模型标签偏差、Matcher 漏配和 Fixture 本身错误。
+
+#### 两个 Matcher 漏配
+
+模型实际正确发现了以下两个 Expected Finding：
+
+1. `can_debit` 使用 `balance <= amount`，错误拒绝余额与扣款额相等的合法交易；
+2. Signup、Login、Invitation 三个流程重复 `email.strip().lower()` normalization。
+
+但 Matcher v1 要求关键词短语按较严格的形式出现：
+
+- 模型使用 `balance == amount`、`remaining balance would be exactly zero`，没有命中标签中的固定短语顺序；
+- 模型使用 `normalization logic duplicated`，没有命中 `duplicated normalization` 的固定词序。
+
+因此每个正确 Finding 都被同时计为一条 False Negative 和一条 False Positive。这里的问题是评测器文本归一化能力不足，不是模型没有发现缺陷。原始 baseline 不回写；未来通过版本化 Matcher 和离线 re-score 修正。
+
+#### 一个 Negative Fixture 缺陷
+
+`holdout-negative-contained-upload-path` 原本期望零 Finding。路径解析代码本身确实正确使用 `resolve()` 和 `relative_to()` 做目录边界校验，但另一个新增文件直接调用：
+
+```python
+def read_upload(filename):
+    return resolve_upload(filename).read_bytes()
+```
+
+该新增文件没有导入同一 PR 另一个新增文件中的 `resolve_upload`，运行时会触发 `NameError`。模型报告这一问题是正确的，所以这条自动 False Positive 实际暴露了 Fixture 缺陷。
+
+不能在看到答案后修改 `holdout-v1` 并覆盖历史证据。后续应创建 `holdout-v2` 修复 Import，同时保留本次 baseline，明确说明第一次盲测也验证了评测数据自身需要审计。
+
+#### 人工审计后的模型结论
+
+- 8 个原定目标问题实际全部被模型识别，人工审计 Recall 为 `1.0`；
+- 模型一共输出 9 条 Finding：8 条对应原定缺陷，另 1 条对应 Fixture 真实存在的缺失 Import；
+- 两个自动 False Negative 均来自 Matcher 漏配；
+- 三个自动 False Positive 中，两个是 Matcher 对同一正确 Finding 的误判，另一个是真实 Fixture 缺陷；
+- 如果只修正两个 Matcher 漏配、暂不修正错误的 negative fixture，严格 Case Pass 将从 `0.3` 变为 `0.5`；
+- 这不等于所有标签都正确：Category 和 Severity 仍存在真实偏差。
+
+对原定 8 个问题做人工标签审计：
+
+| 项目 | 人工审计结果 |
+|---|---:|
+| 问题是否识别 | 8/8 |
+| Category 正确 | 7/8 |
+| Severity 正确 | 5/8 |
+
+真实标签偏差包括：
+
+- async 中 `time.sleep` 被标为 `correctness/medium`，Expected Category 是 `performance`；
+- 折扣百分比/小数单位错误被评为 `high`，Expected Severity 是 `medium`；
+- Shell 命令注入被评为 `critical`，Expected Severity 是 `high`；
+- Loader 异常导致 Lock 未释放被评为 `high`，Expected Severity 是 `medium`。
+
+后三个 Severity 分歧具有一定业务语境差异：负价格可能影响资金、命令执行可能造成进程权限下的全面失陷、永久持锁可能扩大成服务不可用。因此它们既说明模型仍倾向高估，也说明 Severity Ground Truth 需要结合威胁模型和影响范围，而不是把人工标签当作绝对真理。
+
+#### Token 与延迟
+
+```text
+Mean latency: 4040.82 ms
+P50 latency: 2689.73 ms
+P95 latency: 10686.61 ms
+Input tokens: 10403
+Output tokens: 8016
+Total tokens: 18419
+Cost: unavailable
+```
+
+这些数字只描述本次 Holdout 运行。由于 Dataset 与 `seed-v1` 不同，不能把二者的延迟、Token 或质量指标直接当作 Prompt A/B 对比；P95 也只有 10 个样本，不能外推为生产 SLO。
+
+#### 这次 Holdout 真正证明了什么
+
+正面证据：
+
+- Prompt v2 在 8 个新缺陷上没有出现人工确认的漏报；
+- 安全 subprocess negative sample 正确返回空 Findings；
+- 模型能够处理跨文件折扣契约并发现百分比/小数单位错误；
+- 所有响应都通过结构化 Schema，无 Provider 或 Transport 错误。
+
+暴露的问题：
+
+- Category 仍可能偏移；
+- Severity 在高影响描述下仍容易上调；
+- 关键词 Matcher 对符号表达和词序改写不够鲁棒；
+- 人工构造的评测数据本身可能有缺陷，必须审计 Fixture，而不是盲信 Ground Truth；
+- 一次运行仍无法证明随机稳定性。
+
+#### 面试怎么讲
+
+> 我在开发集上把 Prompt v2 调到满分后，专门冻结了一套未参与调优的 Holdout。第一次真实运行的自动 Recall 只有 75%，但我没有直接把它归因于模型，而是逐案例审计。结果发现两个所谓漏报其实是 Matcher 无法识别等价措辞，另一个所谓误报是 negative fixture 自己漏了跨文件 import。人工审计确认模型找到了 8/8 个目标问题，但 Category 只有 7/8、Severity 只有 5/8。这个过程让我把模型质量、评测器质量和数据质量分开处理，也保留原始 baseline，没有为了让分数好看而回写标签。
+
+这个结果比“Holdout 也是满分”更有工程价值，因为它展示了评测系统本身也需要版本化、审计和可追溯修正。
+
+#### 准确边界与下一步
+
+- 人工审计结论尚未形成机器可读的 adjudication artifact；
+- Matcher v1 的原始分数必须保留，不能用人工结论覆盖；
+- `holdout-v1` 已经暴露给开发流程，后续修正版不能再称为完全未见数据；
+- 下一批应实现 Matcher v2 与离线 re-score，并通过新版本报告展示原始分数和重评分数；
+- 应创建 `holdout-v2` 修复 Fixture，但保留 `holdout-v1` 和本次结果；
+- 在进入多 Agent 后，应增加新的未见案例或真实 PR 样本验证泛化。
 
 ---
 
@@ -1021,7 +1183,8 @@ Holdout Mock CLI: 10/10 case pass, usage remained null
 - 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator；
 - 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2；
 - 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline；
-- 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集。
+- 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集；
+- 保存首次 Holdout 原始 baseline，并区分模型错误、Matcher 漏配和 Fixture 缺陷的人工审计。
 
 ### 4.4 安全边界
 
@@ -1175,7 +1338,9 @@ git diff --check: passed
 - DeepSeek 完整 10-case baseline 已保存，运行时工作区干净并绑定 Git commit `4274964`；
 - Prompt v2 baseline 在干净工作区完成并绑定 Git commit `f111d2d`；
 - 两个版本的完整评测均为 10/10 合法响应，无 Transport、Provider 或 Schema 错误；
-- 相同 `seed-v1` 的真实对比中，Recall 保持 `1.0`，Precision 从 `0.4444` 提升到 `1.0`，误报从 10 降到 0，Severity Match 从 `0.25` 提升到 `1.0`。
+- 相同 `seed-v1` 的真实对比中，Recall 保持 `1.0`，Precision 从 `0.4444` 提升到 `1.0`，误报从 10 降到 0，Severity Match 从 `0.25` 提升到 `1.0`；
+- 首次 `holdout-v1` baseline 在干净工作区完成并绑定 Git commit `a19c430`，10/10 获得合法响应；
+- Holdout 原始 Recall 为 `0.75`，人工审计确认 8/8 目标问题均被识别，并定位两个 Matcher 漏配和一个 Fixture 缺陷。
 
 ---
 
@@ -1183,11 +1348,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交并冻结 `holdout-v1`；
-2. 在不修改 Prompt 的前提下运行第一次 DeepSeek holdout baseline；
-3. 固化 holdout 结果后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
-4. 对关键架构版本做重复运行，记录均值、方差和稳定性；
-5. 在获得更多历史结果后定义回归阈值，并使用显式价格快照计算 cost。
+1. 提交首次 Holdout baseline 和人工审计说明；
+2. 实现版本化 Matcher v2 与离线 re-score，不重新调用模型；
+3. 创建 `holdout-v2` 修复 Fixture，同时保留 v1 历史证据；
+4. 固化评测器修正后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
+5. 后续增加重复运行、回归阈值和版本化价格快照。
 
 ### 9.2 后续能力
 
