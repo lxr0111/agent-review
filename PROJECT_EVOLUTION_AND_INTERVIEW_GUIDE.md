@@ -656,6 +656,71 @@ Cost: unavailable
 
 ---
 
+### 3.10 离线 Baseline Comparator
+
+#### 问题
+
+保存 baseline 只能得到单次结果。如果 Prompt v2 产生新的 JSON 后仍靠人工逐项查看，不仅容易漏掉回归，也无法清楚回答“质量提升在哪里、代价是什么”。
+
+#### 设计选择
+
+新增纯离线比较命令：
+
+```powershell
+python -m evals.compare `
+  --baseline evals/baselines/deepseek-flash__review-v1__seed-v1.json `
+  --candidate evals/baselines/deepseek-flash__review-v2__seed-v1.json
+```
+
+比较前强制检查：
+
+- 两侧都必须是完整模型 baseline；
+- Evaluation Schema Version 必须相同；
+- Dataset Version 和 Dataset SHA-256 必须相同；
+- Case ID 集合必须完全一致；
+- Git、执行时间等可复现元数据必须完整。
+
+Comparator 在不改写旧 baseline 的前提下派生：
+
+- Precision；
+- F1；
+- Negative Sample Case Pass Rate；
+- Recall、误报、类别、严重程度、Case Pass、Schema、延迟和 Token 的差值及方向。
+
+逐案例报告：
+
+- 新增 Finding；
+- 消失 Finding；
+- Category 或 Severity 变化；
+- Case Pass、Matched、False Positive 和 False Negative 前后值。
+
+Finding 对齐使用“同文件 + 标题/解释的标准化文本相似度 + 一对一贪心匹配”。Category 和 Severity 不参与对齐，只在对齐后比较，避免标签污染。CamelCase 会先拆词，以识别 `ZeroDivisionError` 与 `zero division` 这类改写。
+
+#### 安全与边界
+
+- 命令只读取本地 JSON，不加载 Settings；
+- 不访问网络、数据库、GitHub 或模型；
+- 当前 `improved/regressed` 只表达指标偏好方向，不是发布门禁；
+- 文本对齐是确定性启发式算法，不等价于完整语义判断，低相似度案例仍需人工复核；
+- 延迟和 Token 会展示变化，但单次小样本波动不能直接证明性能回归。
+
+#### 自动化验证结果
+
+```text
+Eval tests: 32 passed
+All tests: 197 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (84 source files)
+CLI self-comparison smoke test: passed
+review-v1 derived precision: 0.4444444444
+review-v1 derived F1: 0.6153846154
+review-v1 negative-sample case pass rate: 0.0
+```
+
+本批没有修改 Prompt、Dataset 或历史 baseline，也没有调用真实 DeepSeek。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -693,7 +758,8 @@ Cost: unavailable
 - Mock evaluator self-test；
 - Provider token usage 数据通道；
 - 显式开启的 DeepSeek Live Eval；
-- 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline。
+- 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline；
+- 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator。
 
 ### 4.4 安全边界
 
@@ -791,7 +857,7 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 > 搭建兼容 Responses API 的可控故障注入环境，验证 Timeout、429、500/503 的自动恢复、指数退避和 Retry-After 感知，以及 401 和非法结构化输出的快速失败；可恢复场景最终仅保留一份 Report、Publication 和 GitHub Review。
 
-> 建立包含 correctness、security、performance、maintainability、reliability 和 negative samples 的 10 案例评测种子集，实现同文件文本匹配、一对一 Finding 对齐及 Recall、误报、类别、严重程度、Schema 和 Case Pass 指标；保存绑定 Git、Dataset、Prompt 和 Model 版本的 DeepSeek baseline，为 Prompt 和 Agent 架构迭代提供回归基础。
+> 建立包含 correctness、security、performance、maintainability、reliability 和 negative samples 的 10 案例评测种子集，实现同文件文本匹配、一对一 Finding 对齐及 Recall、Precision、F1、误报、类别、严重程度、Schema 和 Case Pass 指标；保存绑定 Git、Dataset、Prompt 和 Model 版本的 DeepSeek baseline，并实现离线 baseline 差异报告，为 Prompt 和 Agent 架构迭代提供回归基础。
 
 暂时不要写入简历的内容：
 
@@ -816,14 +882,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | 第一批 Eval | 175 | Seed、Matcher、Metrics、Mock Runner |
 | Usage metadata | 182 | OpenAI、DeepSeek、Mock、AI Service、Pipeline、Eval 回归 |
 | 受保护的 Live Eval | 192 | 显式 live 开关、低成本试跑、Baseline 安全写入与可复现元数据 |
+| Baseline Comparator | 197 | Dataset 身份校验、派生指标、逐案例 Finding 与标签差异 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 27 passed
-All tests: 192 passed, 2 third-party deprecation warnings
+Eval tests: 32 passed
+All tests: 197 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (82 source files)
+mypy app evals: passed (84 source files)
 git diff --check: passed
 ```
 
@@ -848,15 +915,15 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交首次 DeepSeek baseline 和本次真实评测记录；
+1. 提交离线 Baseline Comparator；
 2. 基于 baseline 设计 Prompt v2，重点校准 severity 并减少泛化的“缺少测试”意见；
-3. 审核 negative samples 的契约和上下文，修改时升级 Dataset Version；
-4. 增加 baseline 对比报告和回归阈值；
-5. 使用显式价格快照计算 cost，不在 Provider 中硬编码价格。
+3. 生成 review-v2 + seed-v1 baseline，并与 review-v1 做离线比较；
+4. 审核 negative samples 的契约和上下文，修改时升级 Dataset Version；
+5. 在获得更多历史结果后定义回归阈值，并使用显式价格快照计算 cost。
 
 ### 9.2 后续能力
 
-- Baseline 对比和回归阈值；
+- 自动化回归阈值；
 - 行级 Finding 和 GitHub inline comment；
 - 更大、更接近真实 PR 的评测集；
 - Prompt injection 专项评测；

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from evals.metrics import EvaluationRun
 
@@ -32,6 +32,17 @@ class ModelBaseline(BaseModel):
 
 def dataset_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_model_baseline(path: Path) -> ModelBaseline:
+    try:
+        serialized = path.read_text(encoding="utf-8")
+    except OSError:
+        raise BaselineSafetyError(f"unable to read model baseline: {path}") from None
+    try:
+        return ModelBaseline.model_validate_json(serialized)
+    except (ValueError, ValidationError):
+        raise BaselineSafetyError(f"invalid model baseline: {path}") from None
 
 
 def collect_git_state(repository_root: Path = REPOSITORY_ROOT) -> GitState:

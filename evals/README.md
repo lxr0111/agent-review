@@ -42,5 +42,21 @@ usage, dataset SHA-256, Git commit and dirty state. They do not contain source p
 environment variables, credentials, provider error messages, or hard-coded model prices. Cost
 remains `null` until a separate versioned price snapshot is implemented.
 
+Compare two saved baselines offline:
+
+```powershell
+python -m evals.compare `
+  --baseline evals/baselines/deepseek-flash__review-v1__seed-v1.json `
+  --candidate evals/baselines/deepseek-flash__review-v2__seed-v1.json
+```
+
+Comparison requires identical evaluation schema versions, dataset versions, dataset SHA-256
+values, and case IDs. It derives precision, F1, and negative-sample case pass rate without
+rewriting old baseline files. It also reports metric deltas plus added, removed, and relabeled
+findings for each case. Actual findings are aligned by file and normalized text only; category
+and severity are compared after alignment and do not influence matching. Delta statuses are
+informational in this version and are not release gates. The comparison command reads local JSON
+only and does not load application settings or access the network, database, GitHub, or an LLM.
+
 Expected source ranges are retained as ground truth for future line-level review support.
 They are not scored in this version because the production finding schema has no line fields.
