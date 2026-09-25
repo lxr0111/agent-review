@@ -1,0 +1,34 @@
+services:
+  llm-fault-stub:
+    build: .
+    command: ["python", "scripts/llm_fault_stub.py", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      FAULT_TIMEOUT_SECONDS: 2
+      FAULT_RETRY_AFTER_SECONDS: 2
+    ports:
+      - "127.0.0.1:8091:8090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  worker:
+    environment:
+      LLM_PROVIDER: deepseek
+      LLM_BASE_URL: http://llm-fault-stub:8090/
+      LLM_MODEL: fault-injection-model
+      LLM_API_KEY: fault-injection-not-a-real-key
+      LLM_TIMEOUT_SECONDS: 1
+      REVIEW_WORKER_MAX_RETRIES: 3
+      REVIEW_RETRY_BASE_SECONDS: 1
+      REVIEW_RETRY_MAX_SECONDS: 4
+    depends_on:
+      llm-fault-stub:
+        condition: service_healthy

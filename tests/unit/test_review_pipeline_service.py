@@ -12,7 +12,9 @@ from app.models.review_file import ReviewFile
 from app.models.review_publication import ReviewPublicationRecord
 from app.models.review_report import ReviewReportRecord
 from app.models.review_task import ReviewTask
+from app.providers.github.exceptions import GitHubTransientError
 from app.providers.llm.mock import MockLLMProvider
+from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.repositories.review_file_repository import ReviewFileRepository
 from app.repositories.review_publication_repository import ReviewPublicationRepository
@@ -51,6 +53,7 @@ class FakeGitHubProvider:
         self.file_calls = 0
         self.review_list_calls = 0
         self.review_create_calls = 0
+        self.review_create_errors: list[Exception] = []
 
     def get_pull_request(
         self,
@@ -119,6 +122,8 @@ class FakeGitHubProvider:
         assert not self._session.in_transaction()
         assert commit_sha == HEAD_SHA
         self.review_create_calls += 1
+        if self.review_create_errors:
+            raise self.review_create_errors.pop(0)
         return PullRequestReview(
             id=9001,
             commit_sha=commit_sha,
@@ -155,23 +160,34 @@ def _task(session: Session, *, status: ReviewStatus = ReviewStatus.QUEUED) -> Re
     return task
 
 
-def _llm() -> MockLLMProvider:
-    return MockLLMProvider(
-        LLMReviewOutput(
-            summary="One authorization issue was found.",
-            findings=(
-                LLMReviewFinding(
-                    title="Authorization is bypassed",
-                    explanation="The changed branch no longer checks the caller.",
-                    suggestion="Restore the access check.",
-                    file_path="src/auth.py",
-                    severity=FindingSeverity.HIGH,
-                    category=FindingCategory.SECURITY,
-                    confidence=0.95,
-                ),
+def _llm_output() -> LLMReviewOutput:
+    return LLMReviewOutput(
+        summary="One authorization issue was found.",
+        findings=(
+            LLMReviewFinding(
+                title="Authorization is bypassed",
+                explanation="The changed branch no longer checks the caller.",
+                suggestion="Restore the access check.",
+                file_path="src/auth.py",
+                severity=FindingSeverity.HIGH,
+                category=FindingCategory.SECURITY,
+                confidence=0.95,
             ),
-        )
+        ),
     )
+
+
+def _llm() -> MockLLMProvider:
+    return MockLLMProvider(_llm_output())
+
+
+class _UsageMockLLMProvider(MockLLMProvider):
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
+        result = super().generate_review(prompt)
+        return LLMReviewResult(
+            output=result.output,
+            usage=LLMTokenUsage(input_tokens=25, output_tokens=5, total_tokens=30),
+        )
 
 
 def _pipeline(
@@ -222,6 +238,23 @@ def test_pipeline_runs_context_ai_persistence_and_publication(session: Session) 
     assert publication.status == ReviewPublicationStatus.PUBLISHED
 
 
+def test_pipeline_remains_compatible_when_provider_returns_usage(session: Session) -> None:
+    task = _task(session)
+    github = FakeGitHubProvider(session)
+    llm = _UsageMockLLMProvider(_llm_output())
+
+    outcome = _pipeline(session, github, llm).run(task.id)
+
+    session.refresh(task)
+    report = session.scalar(select(ReviewReportRecord))
+    assert outcome == ReviewPipelineOutcome.COMPLETED
+    assert task.status == ReviewStatus.COMPLETED
+    assert len(llm.prompts) == 1
+    assert report is not None
+    assert report.model_name == "mock-review-model"
+    assert github.review_create_calls == 1
+
+
 def test_pipeline_resumes_from_saved_report_without_calling_ai_again(session: Session) -> None:
     task = _task(session, status=ReviewStatus.RUNNING)
     task.current_stage = "saving_report"
@@ -249,6 +282,44 @@ def test_pipeline_resumes_from_saved_report_without_calling_ai_again(session: Se
     assert github.file_calls == 0
     assert github.get_calls == 1
     assert github.review_create_calls == 1
+
+
+def test_pipeline_retries_publication_without_calling_ai_again(session: Session) -> None:
+    task = _task(session)
+    github = FakeGitHubProvider(session)
+    github.review_create_errors.append(GitHubTransientError("temporary publication failure"))
+    llm = _llm()
+    pipeline = _pipeline(session, github, llm)
+
+    with pytest.raises(GitHubTransientError, match="temporary publication failure"):
+        pipeline.run(task.id)
+
+    session.refresh(task)
+    first_publication = session.scalar(select(ReviewPublicationRecord))
+    assert task.status == ReviewStatus.RUNNING
+    assert task.attempt_count == 1
+    assert len(llm.prompts) == 1
+    assert github.file_calls == 1
+    assert github.review_create_calls == 1
+    assert session.scalar(select(func.count()).select_from(ReviewReportRecord)) == 1
+    assert first_publication is not None
+    assert first_publication.status == ReviewPublicationStatus.FAILED
+    assert first_publication.attempt_count == 1
+
+    outcome = pipeline.run(task.id)
+
+    session.refresh(task)
+    session.refresh(first_publication)
+    assert outcome == ReviewPipelineOutcome.COMPLETED
+    assert task.status == ReviewStatus.COMPLETED
+    assert task.attempt_count == 2
+    assert len(llm.prompts) == 1
+    assert github.file_calls == 1
+    assert github.review_create_calls == 2
+    assert session.scalar(select(func.count()).select_from(ReviewReportRecord)) == 1
+    assert session.scalar(select(func.count()).select_from(ReviewPublicationRecord)) == 1
+    assert first_publication.status == ReviewPublicationStatus.PUBLISHED
+    assert first_publication.attempt_count == 2
 
 
 def test_pipeline_skips_already_completed_task(session: Session) -> None:
