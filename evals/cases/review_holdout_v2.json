@@ -1,0 +1,489 @@
+{
+  "schema_version": "review-eval-v1",
+  "dataset_version": "holdout-v2",
+  "cases": [
+    {
+      "id": "holdout-correctness-discount-units",
+      "description": "A checkout passes an integer percentage to a helper that expects a decimal fraction.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 101,
+        "title": "Apply promotional percentage at checkout",
+        "body": "Apply discount_percent where 20 means a twenty percent discount.",
+        "base_sha": "base-holdout-discount-units",
+        "head_sha": "head-holdout-discount-units",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/pricing.py",
+          "status": "added",
+          "additions": 3,
+          "deletions": 0,
+          "changes": 3,
+          "patch": "@@ -0,0 +1,3 @@\n+def apply_discount(total, rate):\n+    \"\"\"rate is a decimal fraction between 0 and 1.\"\"\"\n+    return total * (1 - rate)",
+          "previous_path": null
+        },
+        {
+          "path": "src/checkout.py",
+          "status": "added",
+          "additions": 2,
+          "deletions": 0,
+          "changes": 2,
+          "patch": "@@ -0,0 +1,2 @@\n+def final_price(total, discount_percent):\n+    return apply_discount(total, discount_percent)",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "integer-percent-passed-as-fraction",
+          "description": "Passing 20 as a fractional discount rate makes the computed price negative instead of applying twenty percent.",
+          "category": "correctness",
+          "severity": "medium",
+          "file_path": "src/checkout.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 2
+          },
+          "match_terms": [
+            [
+              "percent",
+              "percentage",
+              "20"
+            ],
+            [
+              "fraction",
+              "0.2",
+              "divide by 100",
+              "negative price"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-correctness-exact-balance",
+      "description": "A debit guard rejects a valid transaction that spends the exact available balance.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 102,
+        "title": "Validate wallet debit",
+        "body": "The amount is already validated as positive. Allow a debit when sufficient funds are available, including when the remaining balance is exactly zero.",
+        "base_sha": "base-holdout-exact-balance",
+        "head_sha": "head-holdout-exact-balance",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/wallet.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+def can_debit(balance, amount):\n+    if balance <= amount:\n+        return False\n+    return True",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "equal-balance-wrongly-rejected",
+          "description": "The less-than-or-equal guard rejects a debit equal to the balance even though a zero remaining balance is allowed.",
+          "category": "correctness",
+          "severity": "medium",
+          "file_path": "src/wallet.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 3
+          },
+          "match_terms": [
+            [
+              "equal",
+              "exact balance",
+              "balance equals amount",
+              "zero remaining"
+            ],
+            [
+              "less than or equal",
+              "<=",
+              "rejected",
+              "should allow"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-security-command-injection",
+      "description": "A request filename is interpolated into a shell command.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 103,
+        "title": "Generate image thumbnails",
+        "body": "The filename has passed upload-root containment validation but may contain otherwise valid user-controlled characters. Generate its thumbnail.",
+        "base_sha": "base-holdout-command-injection",
+        "head_sha": "head-holdout-command-injection",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/thumbnails.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+import subprocess\n+\n+def generate_thumbnail(filename):\n+    subprocess.run(f'convert uploads/{filename} thumbnails/{filename}', shell=True, check=True)",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "filename-shell-command-injection",
+          "description": "The request-controlled filename is interpolated into a shell command and permits command injection.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/thumbnails.py",
+          "range": {
+            "start_line": 3,
+            "end_line": 4
+          },
+          "match_terms": [
+            [
+              "command injection",
+              "shell injection"
+            ],
+            [
+              "filename",
+              "user controlled",
+              "request controlled",
+              "shell true"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-security-missing-authorization",
+      "description": "An invoice deletion endpoint ignores the caller and performs no ownership or admin check.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 104,
+        "title": "Allow users to delete invoices",
+        "body": "The route guarantees invoice_id identifies an existing invoice. Users may delete only invoices they own; administrators may delete any invoice.",
+        "base_sha": "base-holdout-missing-authorization",
+        "head_sha": "head-holdout-missing-authorization",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/invoices.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+def delete_invoice(db, invoice_id, current_user):\n+    invoice = db.get(Invoice, invoice_id)\n+    db.delete(invoice)\n+    db.commit()",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "invoice-delete-without-authorization",
+          "description": "The deletion ignores current_user and does not enforce the required owner-or-admin authorization rule.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/invoices.py",
+          "range": {
+            "start_line": 1,
+            "end_line": 4
+          },
+          "match_terms": [
+            [
+              "authorization",
+              "permission",
+              "access control",
+              "ownership"
+            ],
+            [
+              "current user",
+              "current_user",
+              "owner",
+              "admin",
+              "any invoice"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-performance-blocking-async-sleep",
+      "description": "An async polling coroutine blocks the event loop with time.sleep.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 105,
+        "title": "Poll job state asynchronously",
+        "body": "Add a non-blocking coroutine so many job polls can run concurrently.",
+        "base_sha": "base-holdout-blocking-async-sleep",
+        "head_sha": "head-holdout-blocking-async-sleep",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/polling.py",
+          "status": "added",
+          "additions": 8,
+          "deletions": 0,
+          "changes": 8,
+          "patch": "@@ -0,0 +1,8 @@\n+import time\n+\n+async def wait_for_job(client, job_id):\n+    for _ in range(30):\n+        if await client.is_complete(job_id):\n+            return True\n+        time.sleep(1)\n+    return False",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "time-sleep-blocks-event-loop",
+          "description": "Calling time.sleep inside the coroutine blocks the event loop instead of yielding during polling.",
+          "category": "performance",
+          "severity": "medium",
+          "file_path": "src/polling.py",
+          "range": {
+            "start_line": 4,
+            "end_line": 7
+          },
+          "match_terms": [
+            [
+              "blocks the event loop",
+              "blocking sleep",
+              "blocks other coroutines"
+            ],
+            [
+              "time sleep",
+              "time.sleep",
+              "asyncio sleep",
+              "await asyncio.sleep"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-performance-repeated-sorting",
+      "description": "The code repeatedly sorts the complete order list for every order.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 106,
+        "title": "Calculate order rankings",
+        "body": "Return each order with its rank by total value.",
+        "base_sha": "base-holdout-repeated-sorting",
+        "head_sha": "head-holdout-repeated-sorting",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/ranking.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+def rank_orders(orders):\n+    results = []\n+    for order in orders:\n+        ranked = sorted(orders, key=lambda item: item.total, reverse=True)\n+        results.append((order, ranked.index(order) + 1))\n+    return results",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "sort-and-search-repeated-per-order",
+          "description": "Sorting all orders and searching the sorted list inside every loop iteration creates avoidable quadratic-or-worse work.",
+          "category": "performance",
+          "severity": "medium",
+          "file_path": "src/ranking.py",
+          "range": {
+            "start_line": 3,
+            "end_line": 5
+          },
+          "match_terms": [
+            [
+              "sort every iteration",
+              "repeated sorting",
+              "sort inside the loop",
+              "sorted inside"
+            ],
+            [
+              "quadratic",
+              "o n squared",
+              "o n 2",
+              "once outside the loop"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-reliability-lock-not-released",
+      "description": "A cache lock remains held when the loader raises an exception.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 107,
+        "title": "Protect cache population with a lock",
+        "body": "Serialize cache population and allow later requests to continue after loader failures.",
+        "base_sha": "base-holdout-lock-not-released",
+        "head_sha": "head-holdout-lock-not-released",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/cache.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+def get_or_load(cache, lock, key, loader):\n+    lock.acquire()\n+    if key not in cache:\n+        cache[key] = loader(key)\n+    lock.release()\n+    return cache[key]",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "loader-exception-leaves-lock-held",
+          "description": "If loader raises, execution skips lock.release and later callers can deadlock on the permanently held lock.",
+          "category": "reliability",
+          "severity": "medium",
+          "file_path": "src/cache.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 5
+          },
+          "match_terms": [
+            [
+              "lock not released",
+              "lock remains held",
+              "never releases",
+              "deadlock"
+            ],
+            [
+              "loader raises",
+              "exception",
+              "finally",
+              "context manager"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-maintainability-duplicated-normalization",
+      "description": "The same email canonicalization rule is copied into three account flows.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 108,
+        "title": "Normalize account email addresses",
+        "body": "Apply the same canonical email format during signup, login, and invitation.",
+        "base_sha": "base-holdout-duplicated-normalization",
+        "head_sha": "head-holdout-duplicated-normalization",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/accounts.py",
+          "status": "added",
+          "additions": 8,
+          "deletions": 0,
+          "changes": 8,
+          "patch": "@@ -0,0 +1,8 @@\n+def normalize_signup(email):\n+    return email.strip().lower()\n+\n+def normalize_login(email):\n+    return email.strip().lower()\n+\n+def normalize_invitation(email):\n+    return email.strip().lower()",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "email-normalization-copied-three-times",
+          "description": "Copying the email canonicalization rule into three flows creates multiple sources of truth that can drift.",
+          "category": "maintainability",
+          "severity": "low",
+          "file_path": "src/accounts.py",
+          "range": {
+            "start_line": 1,
+            "end_line": 8
+          },
+          "match_terms": [
+            [
+              "duplicated normalization",
+              "duplicate normalization",
+              "repeated normalization",
+              "copied"
+            ],
+            [
+              "email",
+              "strip lower",
+              "single helper",
+              "single source of truth"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holdout-negative-safe-subprocess",
+      "description": "A converter passes trusted Path arguments directly to subprocess without invoking a shell.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 109,
+        "title": "Run the internal image converter safely",
+        "body": "Convert two trusted Paths returned by the internal asset registry without shell parsing.",
+        "base_sha": "base-holdout-safe-subprocess",
+        "head_sha": "head-holdout-safe-subprocess",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/safe_converter.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+import subprocess\n+\n+def convert(source, target):\n+    subprocess.run(['convert', str(source), str(target)], check=True, shell=False)",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": []
+    },
+    {
+      "id": "holdout-negative-contained-upload-path",
+      "description": "A multi-file upload reader resolves the candidate and enforces containment before reading.",
+      "pull_request": {
+        "repository": "eval/agent-review-holdout",
+        "number": 110,
+        "title": "Read uploaded files with containment validation",
+        "body": "Resolve requested upload names and reject paths outside the upload root before reading.",
+        "base_sha": "base-holdout-contained-upload-path",
+        "head_sha": "head-holdout-contained-upload-path-v2",
+        "draft": false,
+        "author_login": "holdout-author"
+      },
+      "files": [
+        {
+          "path": "src/upload_paths.py",
+          "status": "added",
+          "additions": 8,
+          "deletions": 0,
+          "changes": 8,
+          "patch": "@@ -0,0 +1,8 @@\n+from pathlib import Path\n+\n+UPLOAD_ROOT = Path('/srv/uploads').resolve()\n+\n+def resolve_upload(name):\n+    candidate = (UPLOAD_ROOT / name).resolve()\n+    candidate.relative_to(UPLOAD_ROOT)\n+    return candidate",
+          "previous_path": null
+        },
+        {
+          "path": "src/upload_api.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+from .upload_paths import resolve_upload\n+\n+def read_upload(filename):\n+    return resolve_upload(filename).read_bytes()",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": []
+    }
+  ]
+}

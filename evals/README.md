@@ -15,6 +15,10 @@ The datasets have different roles:
 - `review_holdout_v1.json` is a frozen generalization check created after `review-v2`. It has 10
   disjoint cases, including two negatives and two multi-file cases. Do not tune the prompt or
   rewrite labels from its model results; create a new dataset version for future changes.
+- `review_holdout_v2.json` is a corrected derivative of `holdout-v1`, not a new blind holdout.
+  It changes only the known missing import in the contained-upload negative fixture and that
+  fixture's synthetic head SHA. Use it for future regression checks while preserving v1 as the
+  record of the first unseen run.
 
 The first live `review-v2 + holdout-v1` baseline is checked in as
 `deepseek-flash__review-v2__holdout-v1.json`. Preserve its raw evaluator output. Manual review
@@ -46,6 +50,17 @@ automated recall from `0.75` to `1.0` and reduces false positives from `3` to `1
 two confirmed textual alignment misses. The remaining false positive is intentionally retained:
 the supposedly negative fixture contains a real missing import, so suppressing it in the matcher
 would hide a dataset defect.
+
+Run the corrected derivative's offline evaluator self-test with:
+
+```powershell
+python -m evals.runner --dataset evals/cases/review_holdout_v2.json
+```
+
+The v2 dataset has its own frozen SHA-256 and a lineage test proving that the other nine cases,
+all expected findings, and the path-containment implementation are unchanged. Do not compare
+v1 and v2 scores as if they came from the same dataset: their SHA-256 identities differ, and v2
+was created after inspecting the first v1 model result.
 
 The holdout file is guarded by a SHA-256 assertion in the unit tests. Run its offline evaluator
 self-test with:

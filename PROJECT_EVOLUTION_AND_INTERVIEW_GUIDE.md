@@ -1244,6 +1244,79 @@ Category 和 Severity 比例也随匹配分母从 6 增加到 8 而重新计算�
 
 ---
 
+### 3.16 Holdout v2：修复评测数据但保留第一次失败证据
+
+#### 要解决的问题
+
+`holdout-v1` 的 `holdout-negative-contained-upload-path` 原本用于验证安全的目录边界检查，Expected Findings 为空。但 `src/upload_api.py` 调用了另一个新增文件中的 `resolve_upload`，却没有导入它。DeepSeek 正确报告了运行时 `NameError`，因此原自动评分中的一条 negative false positive 实际是 Fixture 缺陷。
+
+直接修改 `review_holdout_v1.json` 会改变已经运行过真实模型的数据集内容，使它的 SHA-256、原始 baseline 和审计结论失去可追溯性。因此本批保留 v1 不变，新增派生版本 `review_holdout_v2.json`。
+
+#### 设计选择
+
+`holdout-v2` 只做经过审计的最小修复：
+
+```python
+from .upload_paths import resolve_upload
+
+
+def read_upload(filename):
+    return resolve_upload(filename).read_bytes()
+```
+
+同时更新该 synthetic PR 的 `head_sha`，保证“Patch 变化但 Head SHA 不变”这种不一致不会进入评测数据。其余约束保持不变：
+
+- 10 个 Case ID 和原顺序不变；
+- 8 个 Expected Findings 不变；
+- 2 个 negative samples 不变；
+- `src/upload_paths.py` 的路径 containment 实现不变；
+- 另外 9 个案例逐对象完全等于 v1；
+- 不修改 Prompt、Matcher、Category、Severity 或 Match Terms。
+
+版本身份：
+
+```text
+Dataset version: holdout-v2
+Dataset SHA-256: ece7d8102bb1973afa1c290928e4051e9f497f5e99045974ab7e04b30e2b3303
+Parent evidence: holdout-v1
+```
+
+#### 为什么 v2 不能再叫盲测集
+
+v2 是在阅读 v1 模型结果后产生的数据修正版。它可以作为未来 Prompt、Matcher 和 Agent 架构的回归集，但不能作为 Prompt v2 的第一次未见数据证据。真正的泛化验证仍需要新的未见案例或真实 PR 样本。
+
+同样，不能把 v1 和 v2 的分数直接解释成模型进步：两次输入的 Dataset SHA-256 不同。现有 Baseline Comparator 和 Rescore 都会校验 Dataset 身份，阻止跨数据集混比。
+
+#### 自动化验证证据
+
+- `holdout-v1` 的 SHA-256 冻结断言保持不变；
+- `holdout-v2` 增加独立 SHA-256 冻结断言；
+- lineage 测试确认只有目标案例发生变化；
+- lineage 测试进一步构造期望对象，限制变化为 `head_sha`、Import Patch 和对应行数统计；
+- v2 仍包含 10 个案例、8 个 Expected Findings 和 2 个 negatives；
+- v2 Mock evaluator self-test 为 10/10 Case Pass、Recall 1.0、False Positives 0；
+- Mock Usage 继续为 `null`，没有伪造 Token 或 Cost。
+
+本批最终测试数量和静态检查结果记录在第 8.1 节。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek，没有生成 v2 Model Baseline，也没有访问 GitHub、数据库或 Redis。Mock 100% 只证明 Dataset、Matcher 和 Metrics 的机械链路一致，不代表模型在修复后的 negative sample 上一定返回零 Finding。
+
+#### 面试怎么讲
+
+> 第一次 Holdout 的一个 negative sample 被模型报错后，我逐文件审计发现不是模型误报，而是评测 Fixture 漏了跨文件 Import。我没有为了让指标变好而覆盖原数据，而是保留 v1、原 baseline 和人工审计，再创建只修复该问题的 v2。测试会逐对象比较两个版本，保证另外九个案例和所有 Expected Findings 都没有被偷偷调整。这让评测数据的修订也具有版本、身份和证据链。
+
+#### 准确边界与下一步
+
+- `holdout-v2` 是 corrected regression set，不是新的 blind holdout；
+- 当前只有 Mock self-test，尚无修复后案例的真实模型结果；
+- 如果需要低成本验证，可下一批为 Eval Runner 增加显式 `--case-id`，只运行目标案例；
+- 部分 live run 只能作为 trial，不能保存成完整 Model Baseline；
+- 进入 Phase 2 后仍需要新的未见数据验证多 Agent 是否真正泛化。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -1288,7 +1361,8 @@ Category 和 Severity 比例也随匹配分母从 6 增加到 8 而重新计算�
 - 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集；
 - 保存首次 Holdout 原始 baseline，并区分模型错误、Matcher 漏配和 Fixture 缺陷的人工审计；
 - 版本化的 `text-v1` / `text-v2` Matcher，以及绑定原 Baseline SHA-256 的纯离线 Rescore artifact；
-- 在不调用模型的条件下重新计算 Finding 对齐、Recall、误报、Category、Severity 和 Case Pass。
+- 在不调用模型的条件下重新计算 Finding 对齐、Recall、误报、Category、Severity 和 Case Pass；
+- 保留 `holdout-v1` 原始证据，并通过严格 lineage 测试冻结只修复已知 Fixture 的 `holdout-v2`。
 
 ### 4.4 安全边界
 
@@ -1417,12 +1491,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Prompt v2 | 198 | 证据约束、测试降噪、上下文边界与 Severity Rubric |
 | Holdout v1 | 201 | 冻结 SHA、开发集隔离、类别/负例/多文件覆盖与 Mock 自测 |
 | Matcher v2 与离线 Rescore | 210 | Matcher 版本兼容、运算符/词序匹配、SHA 绑定、不可变重评分和离线 CLI |
+| Holdout v2 Fixture 修复 | 212 | 独立 SHA、最小差异 lineage、原始证据保留和 corrected regression set Mock 自测 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 44 passed
-All tests: 210 passed, 2 third-party deprecation warnings
+Eval tests: 46 passed
+All tests: 212 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (86 source files)
 git diff --check: passed
@@ -1453,9 +1528,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 Matcher v2、离线 Rescore artifact 和说明文档；
-2. 创建 `holdout-v2` 修复 missing-import Fixture，同时保留 v1 原始证据；
-3. 对修正版 Dataset 做 Mock 自测和身份冻结，不把它伪装成新的未见测试集；
+1. 提交 `holdout-v2`、lineage 测试和说明文档；
+2. 为 Eval Runner 增加显式 `--case-id`，支持低成本精确试跑；
+3. 可选地对修复后的 negative case 做一次 DeepSeek partial live trial，但不保存为 Model Baseline；
 4. 固化评测器与 Fixture 修正后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
 5. 后续增加新的未见案例、重复运行、回归阈值和版本化价格快照。
 
