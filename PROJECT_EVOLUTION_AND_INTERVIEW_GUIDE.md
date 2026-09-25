@@ -1142,6 +1142,108 @@ Cost: unavailable
 
 ---
 
+### 3.15 Matcher v2 与不可变 Baseline 的离线重评分
+
+#### 要解决的问题
+
+首次 Holdout 人工审计确认，模型已经发现 `exact balance` 和 `duplicated normalization` 两个问题，但 Matcher v1 没有把它们与 Expected Finding 对齐：前者包含 `<=`、`balance == amount` 和 `remaining balance is exactly zero` 等符号或改写表达，后者把 `duplicated normalization` 改写成了 `normalization logic duplicated`。如果直接修改原 baseline、Expected Finding 或 Prompt，会把“评测器修正”与“模型质量变化”混在一起，也会破坏第一次运行的历史证据。
+
+#### 设计选择
+
+本批把 Matcher 当作独立、需要版本化的评测组件：
+
+- `text-v1` 完整保留原来的连续短语匹配行为；
+- `text-v2` 增加比较运算符规范化，例如把 `<=` 转换成稳定的文本 Token；
+- `text-v2` 对一个多词 alternative 支持无序 Token 包含，因此能识别词序变化和中间插词；
+- 文件路径仍必须完全一致；
+- Finding 仍使用确定性的一对一贪心对齐；
+- Category、Severity 和 Expected Line Range 仍不参与匹配，防止答案泄漏；
+- 不引入 Embedding 或第二次 LLM 判断，保证结果离线、确定且无额外费用。
+
+历史 baseline 没有 `matcher_version` 字段时按 `text-v1` 加载；新评测显式记录 `text-v2`。因此旧 JSON 可以继续读取，同时以后能够准确说明一份分数由哪个 Matcher 产生。
+
+#### 离线 Rescore
+
+新增 `python -m evals.rescore`，输入冻结 Dataset 和历史 Model Baseline，只复用已经保存的 `actual_findings` 重新计算匹配关系与聚合指标。它不会实例化 Provider，也不会读取应用 Settings、`.env`、数据库或 GitHub。
+
+安全约束包括：
+
+- Dataset version、SHA-256 和 Case IDs 必须与 source baseline 一致；
+- 原始 baseline 不被修改；
+- rescore 使用独立的 `agent-review-offline-rescore-v1` Schema；
+- artifact 保存时拒绝覆盖已有文件；
+- artifact 记录 source baseline SHA-256、source/target Matcher version 和重评分时间；
+- 原模型的输出、Token Usage、Latency、Model、Prompt、Git Commit 和执行时间保持不变；
+- `run_kind` 改为 `offline_rescore`，并明确 `is_model_baseline=false`，避免把重新打分误认为重新调用模型。
+
+执行命令：
+
+```powershell
+python -m evals.rescore `
+  --baseline evals/baselines/deepseek-flash__review-v2__holdout-v1.json `
+  --dataset evals/cases/review_holdout_v1.json `
+  --matcher-version text-v2 `
+  --save
+```
+
+生成的独立 artifact：
+
+```text
+evals/rescores/deepseek-flash__review-v2__holdout-v1__text-v2.json
+```
+
+#### 原始分数与重评分结果
+
+| 指标 | Matcher v1 原始 Baseline | Matcher v2 离线 Rescore |
+|---|---:|---:|
+| Recall | 0.75 | 1.0 |
+| Precision | 0.6667 | 0.8889 |
+| F1 | 0.7059 | 0.9412 |
+| Matched Findings | 6 | 8 |
+| False Positives | 3 | 1 |
+| False Positives / Case | 0.3 | 0.1 |
+| Case Pass Rate | 0.3 | 0.5 |
+| Category Match | 0.8333 | 0.875 |
+| Severity Match | 0.5 | 0.625 |
+| Negative Sample Pass Rate | 0.5 | 0.5 |
+
+两个 Matcher 漏配被修正后，8 个 Expected Findings 全部与已有模型输出对齐。剩余的一条 False Positive 没有被“优化掉”，因为它是模型正确发现的 Fixture 缺失 Import；这应由新 Dataset 版本修复，而不能通过放宽 Matcher 或篡改 `holdout-v1` 掩盖。
+
+Category 和 Severity 比例也随匹配分母从 6 增加到 8 而重新计算。它们没有变成满分，真实的分类和严重程度分歧仍然被保留。
+
+#### 自动化验证证据
+
+- Matcher v1 对两个历史案例仍复现原漏配，证明兼容路径没有被悄悄改写；
+- Matcher v2 能匹配运算符表达和多词词序变化；
+- 原有“同文件、文本证据、一对一、不使用标签”的测试继续通过；
+- Rescore 测试验证 source baseline 内存内容不变；
+- Dataset SHA-256 不一致会被拒绝；
+- artifact 重复保存会被拒绝；
+- checked-in rescore 的 source SHA-256 与原 baseline 文件一致；
+- CLI 测试仅依赖本地 JSON，在没有 Provider 初始化的路径上完成。
+
+本批最终的自动化测试数量和静态检查结果记录在第 8.1 节。
+
+#### 真实集成证据
+
+本批没有再次调用 DeepSeek，也没有访问 GitHub、数据库或 Redis。重评分使用的是上一批已经保存的真实 DeepSeek 输出，因此本批证据属于“真实模型输出的离线再分析”，不是一次新的真实模型集成运行。Token 和 Latency 与原 baseline 完全相同只能证明元数据被保留，不能算新的性能测量。
+
+#### 面试怎么讲
+
+> Holdout 第一次自动评分只有 75% Recall，但人工审计发现其中两个漏报其实是 Matcher 无法识别等价表达。我没有覆盖原 baseline，也没有为了提高分数去修改 Expected Finding，而是把 Matcher 独立版本化：v1 保留历史语义，v2 增加运算符规范化和多词无序匹配。然后通过完全离线的 Rescore 复用同一批模型输出，Recall 从 0.75 修正到 1.0。重评分 artifact 绑定原 baseline 和 Dataset 的 SHA-256，所以可以证明变化只来自评测器，而不是重新调用模型或改 Prompt。
+
+这体现的不是单纯“把分数调高”，而是区分模型、数据和评测器三个独立误差来源，并保留可审计的证据链。
+
+#### 准确边界与尚未完成
+
+- Matcher v2 仍然是规则化文本匹配，不具备真正的自然语言语义推理能力；
+- 无序 Token 包含可能在长文本中产生偶然共现，当前依靠同文件、Term Group Coverage 和一对一匹配降低风险；
+- `holdout-v1` 的 missing-import Fixture 缺陷仍然存在且必须保留；
+- 下一批应创建 `holdout-v2` 修复 Fixture，而不是覆盖 v1；
+- 需要新的未见案例或真实 PR 样本继续检验 Matcher v2 的泛化与误配风险。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -1184,7 +1286,9 @@ Cost: unavailable
 - 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2；
 - 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline；
 - 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集；
-- 保存首次 Holdout 原始 baseline，并区分模型错误、Matcher 漏配和 Fixture 缺陷的人工审计。
+- 保存首次 Holdout 原始 baseline，并区分模型错误、Matcher 漏配和 Fixture 缺陷的人工审计；
+- 版本化的 `text-v1` / `text-v2` Matcher，以及绑定原 Baseline SHA-256 的纯离线 Rescore artifact；
+- 在不调用模型的条件下重新计算 Finding 对齐、Recall、误报、Category、Severity 和 Case Pass。
 
 ### 4.4 安全边界
 
@@ -1312,14 +1416,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Baseline Comparator | 197 | Dataset 身份校验、派生指标、逐案例 Finding 与标签差异 |
 | Prompt v2 | 198 | 证据约束、测试降噪、上下文边界与 Severity Rubric |
 | Holdout v1 | 201 | 冻结 SHA、开发集隔离、类别/负例/多文件覆盖与 Mock 自测 |
+| Matcher v2 与离线 Rescore | 210 | Matcher 版本兼容、运算符/词序匹配、SHA 绑定、不可变重评分和离线 CLI |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 35 passed
-All tests: 201 passed, 2 third-party deprecation warnings
+Eval tests: 44 passed
+All tests: 210 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (84 source files)
+mypy app evals: passed (86 source files)
 git diff --check: passed
 ```
 
@@ -1348,11 +1453,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交首次 Holdout baseline 和人工审计说明；
-2. 实现版本化 Matcher v2 与离线 re-score，不重新调用模型；
-3. 创建 `holdout-v2` 修复 Fixture，同时保留 v1 历史证据；
-4. 固化评测器修正后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
-5. 后续增加重复运行、回归阈值和版本化价格快照。
+1. 提交 Matcher v2、离线 Rescore artifact 和说明文档；
+2. 创建 `holdout-v2` 修复 missing-import Fixture，同时保留 v1 原始证据；
+3. 对修正版 Dataset 做 Mock 自测和身份冻结，不把它伪装成新的未见测试集；
+4. 固化评测器与 Fixture 修正后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
+5. 后续增加新的未见案例、重复运行、回归阈值和版本化价格快照。
 
 ### 9.2 后续能力
 

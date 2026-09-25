@@ -8,8 +8,10 @@ from evals.baseline import (
     build_model_baseline,
     dataset_sha256,
     default_baseline_path,
+    load_model_baseline,
     save_model_baseline,
 )
+from evals.matcher import MatcherVersion
 from evals.metrics import EvaluationRun
 from evals.runner import run_mock_evaluation
 from evals.schemas import load_dataset
@@ -55,6 +57,14 @@ def test_baseline_contains_reproducibility_metadata_without_source_patches() -> 
     assert baseline.evaluation.git_commit == "abc123"
     assert '"git_dirty":false' in serialized
     assert "return sum(values) / len(values)" not in serialized
+
+
+def test_historical_baseline_without_matcher_metadata_defaults_to_text_v1() -> None:
+    baseline = load_model_baseline(
+        Path("evals/baselines/deepseek-flash__review-v2__holdout-v1.json")
+    )
+
+    assert baseline.evaluation.matcher_version == MatcherVersion.TEXT_V1
 
 
 def test_default_baseline_path_is_stable_and_safe() -> None:

@@ -6,10 +6,21 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.review.exceptions import ReviewOutputValidationError
-from app.domain.review.report import FindingCategory, FindingSeverity, ReviewReport
+from app.domain.review.report import (
+    FindingCategory,
+    FindingSeverity,
+    ReviewFinding,
+    ReviewReport,
+)
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
 from app.providers.llm.protocol import LLMTokenUsage
-from evals.matcher import match_findings
+from evals.matcher import (
+    CURRENT_MATCHER_VERSION,
+    LEGACY_MATCHER_VERSION,
+    FindingMatchResult,
+    MatcherVersion,
+    match_findings,
+)
 from evals.schemas import EvalCase, EvalDataset, EvalLineRange
 
 
@@ -109,6 +120,7 @@ class EvaluationRun(BaseModel):
     provider: str
     model_name: str | None
     prompt_version: str
+    matcher_version: MatcherVersion = LEGACY_MATCHER_VERSION
     is_model_baseline: bool
     schema_version: str
     dataset_version: str
@@ -128,36 +140,18 @@ def successful_case_evaluation(
     *,
     latency_ms: float,
     usage: LLMTokenUsage | None = None,
+    matcher_version: MatcherVersion = CURRENT_MATCHER_VERSION,
 ) -> CaseEvaluation:
-    result = match_findings(case.expected_findings, report.findings)
-    details: list[FindingMatchDetail] = []
-    category_matches = 0
-    severity_matches = 0
-    for match in result.matches:
-        expected = case.expected_findings[match.expected_index]
-        actual = report.findings[match.actual_index]
-        category_match = expected.category == actual.category
-        severity_match = expected.severity == actual.severity
-        category_matches += int(category_match)
-        severity_matches += int(severity_match)
-        details.append(
-            FindingMatchDetail(
-                expected_id=expected.id,
-                actual_title=actual.title,
-                file_path=actual.file_path,
-                expected_range=expected.range,
-                score=match.score,
-                category_match=category_match,
-                severity_match=severity_match,
-            )
-        )
-
+    result, details, category_matches, severity_matches = _score_findings(
+        case,
+        report.findings,
+        matcher_version=matcher_version,
+    )
     matched_count = len(result.matches)
-    case_pass = (
-        not result.unmatched_expected_indices
-        and not result.unmatched_actual_indices
-        and category_matches == matched_count
-        and severity_matches == matched_count
+    case_pass = _case_passes(
+        result,
+        category_matches=category_matches,
+        severity_matches=severity_matches,
     )
     return CaseEvaluation(
         case_id=case.id,
@@ -187,8 +181,91 @@ def successful_case_evaluation(
             )
             for finding in report.findings
         ),
-        matches=tuple(details),
+        matches=details,
         usage=_eval_usage(usage),
+    )
+
+
+def rescore_successful_case(
+    case: EvalCase,
+    previous: CaseEvaluation,
+    *,
+    matcher_version: MatcherVersion,
+) -> CaseEvaluation:
+    if previous.outcome != EvaluationOutcome.SUCCESSFUL_CASE:
+        return previous
+
+    result, details, category_matches, severity_matches = _score_findings(
+        case,
+        previous.actual_findings,
+        matcher_version=matcher_version,
+    )
+    return previous.model_copy(
+        update={
+            "expected_finding_count": len(case.expected_findings),
+            "actual_finding_count": len(previous.actual_findings),
+            "matched_finding_count": len(result.matches),
+            "false_positive_count": len(result.unmatched_actual_indices),
+            "false_negative_count": len(result.unmatched_expected_indices),
+            "category_match_count": category_matches,
+            "severity_match_count": severity_matches,
+            "case_pass": _case_passes(
+                result,
+                category_matches=category_matches,
+                severity_matches=severity_matches,
+            ),
+            "matches": details,
+        }
+    )
+
+
+def _score_findings(
+    case: EvalCase,
+    findings: tuple[ReviewFinding | EvaluatedFinding, ...],
+    *,
+    matcher_version: MatcherVersion,
+) -> tuple[FindingMatchResult, tuple[FindingMatchDetail, ...], int, int]:
+    result = match_findings(
+        case.expected_findings,
+        findings,
+        matcher_version=matcher_version,
+    )
+    details: list[FindingMatchDetail] = []
+    category_matches = 0
+    severity_matches = 0
+    for match in result.matches:
+        expected = case.expected_findings[match.expected_index]
+        actual = findings[match.actual_index]
+        category_match = expected.category == actual.category
+        severity_match = expected.severity == actual.severity
+        category_matches += int(category_match)
+        severity_matches += int(severity_match)
+        details.append(
+            FindingMatchDetail(
+                expected_id=expected.id,
+                actual_title=actual.title,
+                file_path=actual.file_path,
+                expected_range=expected.range,
+                score=match.score,
+                category_match=category_match,
+                severity_match=severity_match,
+            )
+        )
+    return result, tuple(details), category_matches, severity_matches
+
+
+def _case_passes(
+    result: FindingMatchResult,
+    *,
+    category_matches: int,
+    severity_matches: int,
+) -> bool:
+    matched_count = len(result.matches)
+    return (
+        not result.unmatched_expected_indices
+        and not result.unmatched_actual_indices
+        and category_matches == matched_count
+        and severity_matches == matched_count
     )
 
 

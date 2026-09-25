@@ -21,6 +21,7 @@ from evals.baseline import (
     default_baseline_path,
     save_model_baseline,
 )
+from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.metrics import (
     CaseEvaluation,
     EvaluationRun,
@@ -86,6 +87,7 @@ def run_mock_evaluation(
         provider="mock",
         model_name="eval-self-test-mock",
         prompt_version=PROMPT_VERSION,
+        matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=False,
         schema_version=dataset.schema_version,
         dataset_version=dataset.dataset_version,
@@ -112,6 +114,7 @@ def run_live_evaluation(
         provider="deepseek",
         model_name=provider.model_name,
         prompt_version=PROMPT_VERSION,
+        matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=max_cases is None,
         schema_version=dataset.schema_version,
         dataset_version=dataset.dataset_version,

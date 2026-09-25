@@ -21,6 +21,32 @@ The first live `review-v2 + holdout-v1` baseline is checked in as
 found two text-matcher misses and one supposedly negative fixture with a real missing-import
 defect; these are documented separately instead of rewriting the frozen dataset or baseline.
 
+Matcher behavior is versioned independently from the model and prompt. Historical baselines
+without an explicit matcher field are interpreted as `text-v1`. New evaluator runs use
+`text-v2`, which preserves same-file, one-to-one matching while adding deterministic operator
+normalization and order-insensitive matching within a multi-word expected alternative. Category,
+severity, and expected line range still do not influence finding alignment.
+
+Re-score the saved Holdout findings with Matcher v2 without calling a model:
+
+```powershell
+python -m evals.rescore `
+  --baseline evals/baselines/deepseek-flash__review-v2__holdout-v1.json `
+  --dataset evals/cases/review_holdout_v1.json `
+  --matcher-version text-v2
+```
+
+Add `--save` to write the default immutable artifact under `evals/rescores/`, or combine
+`--save --output NEW_PATH` to select a new file. Saving refuses to overwrite an existing
+artifact. The command validates the dataset version, SHA-256, and case IDs; it reads only local
+JSON and does not load application settings or access the network, database, GitHub, or an LLM.
+
+The checked-in `text-v2` Holdout rescore is bound to the source baseline by SHA-256. It raises
+automated recall from `0.75` to `1.0` and reduces false positives from `3` to `1` by fixing the
+two confirmed textual alignment misses. The remaining false positive is intentionally retained:
+the supposedly negative fixture contains a real missing import, so suppressing it in the matcher
+would hide a dataset defect.
+
 The holdout file is guarded by a SHA-256 assertion in the unit tests. Run its offline evaluator
 self-test with:
 

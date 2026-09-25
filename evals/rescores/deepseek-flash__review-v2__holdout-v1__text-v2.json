@@ -1,0 +1,528 @@
+{
+  "rescore_schema_version": "agent-review-offline-rescore-v1",
+  "source_baseline_sha256": "6a4a03da83e1e9bef04d8a2de61e52937d341f5b89eee9ed24db35cb092f89a9",
+  "source_matcher_version": "text-v1",
+  "target_matcher_version": "text-v2",
+  "rescored_at": "2026-09-25T14:59:34.052350Z",
+  "source_metrics": {
+    "recall": 0.75,
+    "precision": 0.6666666666666666,
+    "f1": 0.7058823529411765,
+    "false_positives": 3,
+    "false_positives_per_case": 0.3,
+    "negative_sample_case_pass_rate": 0.5,
+    "category_match": 0.8333333333333334,
+    "severity_match": 0.5,
+    "case_pass_rate": 0.3
+  },
+  "rescored_metrics": {
+    "recall": 1.0,
+    "precision": 0.8888888888888888,
+    "f1": 0.9411764705882353,
+    "false_positives": 1,
+    "false_positives_per_case": 0.1,
+    "negative_sample_case_pass_rate": 0.5,
+    "category_match": 0.875,
+    "severity_match": 0.625,
+    "case_pass_rate": 0.5
+  },
+  "evaluation": {
+    "run_kind": "offline_rescore",
+    "provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "prompt_version": "review-v2",
+    "matcher_version": "text-v2",
+    "is_model_baseline": false,
+    "schema_version": "review-eval-v1",
+    "dataset_version": "holdout-v1",
+    "dataset_sha256": "9902805446cea36d711bdb8450f64609633ac6599099dc5810726c78f302567c",
+    "dataset_case_count": 10,
+    "executed_case_count": 10,
+    "git_commit": "a19c4300282d650206a37b8637af9b88e55d4bd2",
+    "git_dirty": false,
+    "executed_at": "2026-09-25T10:48:47.858651Z",
+    "cases": [
+      {
+        "case_id": "holdout-correctness-discount-units",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 4976.236700000072,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change introduces a unit mismatch between the two new functions: `checkout.final_price` accepts a percentage (20 = 20%) but forwards it unchanged to `pricing.apply_discount`, whose docstring contract requires a decimal fraction (0–1). Any percentage >= 1 therefore produces a negative price, violating the stated PR behavior contract.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Discount percentage passed where a decimal fraction is expected",
+            "explanation": "`apply_discount` documents `rate` as a decimal fraction between 0 and 1 and computes `total * (1 - rate)`. The new `final_price(total, discount_percent)` passes the percentage straight through, so the documented contract from the PR body (20 means a twenty percent discount) is not honored: `final_price(100, 20)` evaluates to `100 * (1 - 20) = -1900`, a negative charge, and even small values like `final_price(100, 5)` yield `-400`. Only values already in [0, 1] happen to work, which contradicts the percentage-based API the change advertises.",
+            "suggestion": "Convert the percentage to a fraction at the boundary, e.g. `return apply_discount(total, discount_percent / 100)` in `src/checkout.py` (and validate/clamp the range if out-of-range percentages are possible), or change `apply_discount` to take a percentage directly and rename the parameter to match. Add a regression test such as `final_price(100, 20) == 80` to lock in the percentage semantics.",
+            "file_path": "src/checkout.py",
+            "severity": "high",
+            "category": "correctness",
+            "confidence": 0.92
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "integer-percent-passed-as-fraction",
+            "actual_title": "Discount percentage passed where a decimal fraction is expected",
+            "file_path": "src/checkout.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 2
+            },
+            "score": 0.9176470588235295,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1082,
+          "output_tokens": 1049,
+          "total_tokens": 2131,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-correctness-exact-balance",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2461.4893999998912,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The new `can_debit` guard is inverted for the exact-balance case. The PR contract says a debit must be allowed when sufficient funds are available, including when the remaining balance is exactly zero (i.e. `balance == amount`), but `balance <= amount` rejects that case. Only `balance > amount` is allowed today.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "can_debit rejects a debit when the remaining balance would be exactly zero",
+            "explanation": "The stated contract is that a debit is allowed whenever sufficient funds are available, including when the remaining balance is exactly zero (balance == amount). The implementation `if balance <= amount: return False` treats `balance == amount` as insufficient, so a valid debit that would bring the balance to zero is refused. This is an off-by-one/inverted-comparison bug that directly contradicts the documented behavior.",
+            "suggestion": "Change the guard to reject only insufficient funds: `if balance < amount: return False` (and keep `return True` otherwise). Add a regression test asserting `can_debit(100, 100) is True`, `can_debit(100, 99) is True`, and `can_debit(100, 101) is False`.",
+            "file_path": "src/wallet.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.97
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "equal-balance-wrongly-rejected",
+            "actual_title": "can_debit rejects a debit when the remaining balance would be exactly zero",
+            "file_path": "src/wallet.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 3
+            },
+            "score": 0.9764705882352942,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1012,
+          "output_tokens": 442,
+          "total_tokens": 1454,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-security-command-injection",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3986.627700000099,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The change invokes ImageMagick's `convert` through a shell with an f-string built from a user-controlled filename. Since the filename is explicitly described as possibly containing user-controlled characters, this is a straightforward shell command-injection (RCE) sink. It should be replaced with argument-list invocation and no shell, plus `--` to terminate option parsing.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Shell command injection via user-controlled filename in subprocess.run",
+            "explanation": "`generate_thumbnail` builds a shell command by interpolating `filename` into an f-string and executes it with `shell=True`. The PR description states the filename has only passed upload-root containment validation and may contain otherwise valid user-controlled characters (e.g. `;`, `$(...)`, backticks, `&&`, spaces, newlines). Any such character lets the caller execute arbitrary shell commands with the privileges of the thumbnail process, so containment validation does not mitigate this. A leading `-` also lets the filename be parsed as a `convert` option.",
+            "suggestion": "Avoid the shell entirely and pass the command as an argument list so the filename is treated as data: `subprocess.run(['convert', '--', f'uploads/{filename}', f'thumbnails/{filename}'], shell=False, check=True)`, and/or resolve the path with `os.path.basename`/`pathlib` so only a safe filename component reaches the command. Add a regression test that feeds filenames such as `a; touch /tmp/pwned` and `-oops.png` and asserts no shell execution or option injection occurs.",
+            "file_path": "src/thumbnails.py",
+            "severity": "critical",
+            "category": "security",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "filename-shell-command-injection",
+            "actual_title": "Shell command injection via user-controlled filename in subprocess.run",
+            "file_path": "src/thumbnails.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9538461538461539,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1023,
+          "output_tokens": 711,
+          "total_tokens": 1734,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-security-missing-authorization",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2546.7288999998345,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The new delete_invoice handler accepts current_user but never performs any ownership or role check, so the documented authorization contract (owners only, admins any) is not enforced. Any caller who reaches this function can delete an arbitrary invoice.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Missing authorization check in delete_invoice",
+            "explanation": "delete_invoice receives current_user but ignores it entirely: it fetches the invoice by id and deletes it unconditionally. The PR body states users may delete only invoices they own and administrators any invoice, so the intended access-control rule is absent. Any authenticated user (or any caller of this handler) can permanently delete invoices belonging to other users, an IDOR-style authorization failure causing data loss. The unused current_user parameter makes the omission explicit.",
+            "suggestion": "Enforce the documented rule before deleting, e.g. load the invoice, then require invoice.owner_id == current_user.id or current_user.is_admin, raising an authorization error (403/permission denied) otherwise. Add regression tests covering: owner deleting own invoice succeeds, non-owner deleting another user's invoice is rejected, and an admin deleting any invoice succeeds.",
+            "file_path": "src/invoices.py",
+            "severity": "high",
+            "category": "security",
+            "confidence": 0.97
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "invoice-delete-without-authorization",
+            "actual_title": "Missing authorization check in delete_invoice",
+            "file_path": "src/invoices.py",
+            "expected_range": {
+              "start_line": 1,
+              "end_line": 4
+            },
+            "score": 0.942857142857143,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1024,
+          "output_tokens": 489,
+          "total_tokens": 1513,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-performance-blocking-async-sleep",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2534.317500000043,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 1,
+        "case_pass": false,
+        "summary": "The new async poller is declared as a non-blocking coroutine but calls blocking `time.sleep(1)` inside the loop, which stalls the event loop for up to 30 seconds per poll and prevents any real concurrency between polls. This directly contradicts the PR's stated goal of running many job polls concurrently.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Blocking time.sleep inside async wait_for_job stalls the event loop",
+            "explanation": "`wait_for_job` is an `async def` coroutine intended (per the PR description) to let many job polls run concurrently. However, each unsuccessful iteration calls the synchronous `time.sleep(1)`, which blocks the running thread and therefore the entire event loop. While one poll is sleeping, no other coroutine (including other `wait_for_job` invocations, or the awaited `client.is_complete` calls) can make progress, so concurrency is serialized and the coroutine behaves effectively like a blocking call for up to ~30 seconds. This is a concrete reliability/performance regression against the documented concurrency goal.",
+            "suggestion": "Replace `time.sleep(1)` with `await asyncio.sleep(1)` (importing `asyncio`) so the event loop is yielded between polls and multiple polls can actually run concurrently. Add a regression test that runs two `wait_for_job` calls concurrently against a fake client and asserts the total elapsed time is close to one poll interval rather than the sum of both, which would fail under `time.sleep`.",
+            "file_path": "src/polling.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.95
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "time-sleep-blocks-event-loop",
+            "actual_title": "Blocking time.sleep inside async wait_for_job stalls the event loop",
+            "file_path": "src/polling.py",
+            "expected_range": {
+              "start_line": 4,
+              "end_line": 7
+            },
+            "score": 0.9285714285714286,
+            "category_match": false,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1042,
+          "output_tokens": 462,
+          "total_tokens": 1504,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-performance-repeated-sorting",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 5086.797800000113,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The change adds `rank_orders`, which recomputes a full sort of the entire `orders` list inside the loop for every order. This makes ranking quadratic-logarithmic in the number of orders when a single sort plus enumeration would suffice. Correctness of the returned order/rank pairs is otherwise plausible under default equality semantics.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Full sort recomputed for every order in rank_orders",
+            "explanation": "Inside the `for order in orders` loop, `sorted(orders, key=...)` re-sorts the whole collection on each iteration, and `ranked.index(order)` then performs a linear scan. The result is O(n^2 log n) time and O(n) extra allocation per order, even though the ranking is fully determined by one sort. For any realistically sized order set this is a material performance regression/footgun compared to the obvious single-pass implementation.",
+            "suggestion": "Sort once, then derive ranks from the sorted sequence, e.g. `ranked = sorted(orders, key=lambda item: item.total, reverse=True)` followed by building a mapping/enumeration so each order's rank is looked up in O(1) rather than re-sorting and scanning. If ties must all receive the first tied rank, handle that explicitly instead of relying on `list.index` equality. Add a regression test with a large order list to guard against reintroducing the repeated sort.",
+            "file_path": "src/ranking.py",
+            "severity": "medium",
+            "category": "performance",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "sort-and-search-repeated-per-order",
+            "actual_title": "Full sort recomputed for every order in rank_orders",
+            "file_path": "src/ranking.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 5
+            },
+            "score": 0.9222222222222223,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1031,
+          "output_tokens": 938,
+          "total_tokens": 1969,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-reliability-lock-not-released",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2689.733599999954,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "The new `get_or_load` helper acquires `lock` and releases it only on the success path. If `loader(key)` raises (or the cache assignment raises), the release is skipped, so the lock stays held and every later request either blocks forever or is denied — exactly the failure-continuation behavior the PR claims to provide. Wrap the critical section in try/finally (or use the lock as a context manager).",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Lock is not released when loader raises, deadlocking later requests",
+            "explanation": "`get_or_load` calls `lock.acquire()` and `lock.release()` on separate, non-exceptional code paths. If `loader(key)` throws (the transient loader failure case the PR body says must be tolerated) the exception propagates out of the function before `lock.release()` runs, leaving the lock permanently held. Any subsequent caller of `get_or_load` then blocks forever (or fails, for a non-blocking lock), turning a single loader failure into a broad, unrecoverable outage for that cache. The stated contract — \"allow later requests to continue after loader failures\" — is therefore not met.",
+            "suggestion": "Release the lock unconditionally: use `with lock:` around the check-and-load block, or wrap the body in `try/finally: lock.release()`. Add a regression test that makes `loader` raise on the first call and then asserts the lock is free and a second `get_or_load` call succeeds.",
+            "file_path": "src/cache.py",
+            "severity": "high",
+            "category": "reliability",
+            "confidence": 0.93
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "loader-exception-leaves-lock-held",
+            "actual_title": "Lock is not released when loader raises, deadlocking later requests",
+            "file_path": "src/cache.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 5
+            },
+            "score": 0.9375,
+            "category_match": true,
+            "severity_match": false
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1033,
+          "output_tokens": 505,
+          "total_tokens": 1538,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-maintainability-duplicated-normalization",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3211.358799999971,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The change introduces email normalization as three separate, byte-identical functions in src/accounts.py. Each one independently implements the same `strip().lower()` canonicalization, so the stated contract (\"same canonical email format during signup, login, and invitation\") is maintained only by copy-paste rather than by a single shared definition. No functional failure is introduced by this patch itself; the concern is the drift risk inherent in the duplication.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Identical normalization logic duplicated across signup, login, and invitation",
+            "explanation": "`normalize_signup`, `normalize_login`, and `normalize_invitation` all contain exactly the same body (`email.strip().lower()`). The PR's stated goal is that all three paths produce the same canonical format, but that equivalence is enforced only by three independent copies. Any future edit to a single copy (e.g., trimming internal whitespace, handling `+` tags, or Unicode case folding) will silently make one path inconsistent with the others, which for email-keyed lookups can cause accounts that fail to match across signup/login/invitation. This is an objective maintainability defect exposed by the added code, not a hypothetical runtime bug in the current revision.",
+            "suggestion": "Define a single canonical helper (e.g. `def normalize_email(email): return email.strip().lower()`) and have `normalize_signup`, `normalize_login`, and `normalize_invitation` delegate to it, or call the shared helper directly at each call site. Add a test asserting that all three entry points return the same result for a shared set of inputs so the coupling is enforced rather than assumed.",
+            "file_path": "src/accounts.py",
+            "severity": "low",
+            "category": "maintainability",
+            "confidence": 0.85
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "email-normalization-copied-three-times",
+            "actual_title": "Identical normalization logic duplicated across signup, login, and invitation",
+            "file_path": "src/accounts.py",
+            "expected_range": {
+              "start_line": 1,
+              "end_line": 8
+            },
+            "score": 0.875,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1033,
+          "output_tokens": 604,
+          "total_tokens": 1637,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-negative-safe-subprocess",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2228.30080000017,
+        "expected_finding_count": 0,
+        "actual_finding_count": 0,
+        "matched_finding_count": 0,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": true,
+        "summary": "The change adds a small wrapper that invokes the external `convert` binary with an argument list and `shell=False`, which is the recommended way to avoid shell parsing/injection. The PR explicitly documents that both inputs are trusted `Path` objects from the internal asset registry, so no untrusted-input handling is required. No correctness, reliability, or security defect is demonstrated by the supplied diff.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1011,
+          "output_tokens": 379,
+          "total_tokens": 1390,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "holdout-negative-contained-upload-path",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 10686.612699999841,
+        "expected_finding_count": 0,
+        "actual_finding_count": 1,
+        "matched_finding_count": 0,
+        "false_positive_count": 1,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": false,
+        "summary": "Small two-file addition: `src/upload_paths.py` resolves an upload name under `/srv/uploads` and enforces containment, and `src/upload_api.py` is meant to read the validated path. The containment logic itself (`(UPLOAD_ROOT / name).resolve()` followed by `candidate.relative_to(UPLOAD_ROOT)`) correctly rejects absolute paths, `..` traversal, and symlink escapes because `resolve()` is performed before the component-wise `relative_to` check. The concrete defect is in the new API file: it calls `resolve_upload` without importing it, so it cannot run at all.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "read_upload calls resolve_upload without importing it",
+            "explanation": "`src/upload_api.py` is added as a brand-new two-line file containing only `read_upload`, and it calls `resolve_upload(filename)`. That symbol is defined in the newly added `src/upload_paths.py`, but there is no `import` (or `from ... import ...`) statement anywhere in `src/upload_api.py` — the patch shows the complete file contents. Any call to `read_upload` will therefore raise `NameError: name 'resolve_upload' is not defined` before the containment validation ever executes, so the feature described in the PR body does not work.",
+            "suggestion": "Add the missing import (e.g. `from src.upload_paths import resolve_upload`, adjusted to the project's import style) at the top of `src/upload_api.py`, and include a regression test that exercises `read_upload` end to end: it should return bytes for a file inside the upload root, and raise for `../` traversal and for a symlink pointing outside the root.",
+            "file_path": "src/upload_api.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.85
+          }
+        ],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1112,
+          "output_tokens": 2437,
+          "total_tokens": 3549,
+          "cost_usd": null
+        }
+      }
+    ],
+    "metrics": {
+      "total_cases": 10,
+      "successful_cases": 10,
+      "transport_errors": 0,
+      "provider_errors": 0,
+      "schema_errors": 0,
+      "passed_cases": 5,
+      "case_pass_rate": 0.5,
+      "expected_findings": 8,
+      "matched_findings": 8,
+      "recall": 1.0,
+      "false_positives": 1,
+      "false_positives_per_case": 0.1,
+      "negative_sample_false_positives": 1,
+      "category_match": 0.875,
+      "severity_match": 0.625,
+      "schema_validity": 1.0,
+      "latency_mean_ms": 4040.8203899999994,
+      "latency_p50_ms": 2689.733599999954,
+      "latency_p95_ms": 10686.612699999841,
+      "usage": {
+        "input_tokens": 10403,
+        "output_tokens": 8016,
+        "total_tokens": 18419,
+        "cost_usd": null
+      }
+    }
+  }
+}

@@ -1,10 +1,18 @@
+from pathlib import Path
+
 from app.domain.review.report import (
     FindingCategory,
     FindingSeverity,
     ReviewFinding,
 )
-from evals.matcher import match_findings
-from evals.schemas import EvalExpectedFinding, EvalLineRange
+from evals.baseline import load_model_baseline
+from evals.matcher import MatcherVersion, match_findings
+from evals.schemas import EvalExpectedFinding, EvalLineRange, load_dataset
+
+HOLDOUT_DATASET_PATH = Path("evals/cases/review_holdout_v1.json")
+HOLDOUT_BASELINE_PATH = Path(
+    "evals/baselines/deepseek-flash__review-v2__holdout-v1.json"
+)
 
 
 def _expected(*, finding_id: str = "division", file_path: str = "src/stats.py") -> EvalExpectedFinding:
@@ -79,3 +87,33 @@ def test_matcher_assigns_each_actual_finding_at_most_once() -> None:
     assert len(result.matches) == 1
     assert len(result.unmatched_expected_indices) == 1
     assert result.unmatched_actual_indices == ()
+
+
+def test_text_v2_matches_reordered_terms_and_normalized_operators() -> None:
+    dataset = load_dataset(HOLDOUT_DATASET_PATH)
+    baseline = load_model_baseline(HOLDOUT_BASELINE_PATH)
+    expected_by_id = {case.id: case for case in dataset.cases}
+    actual_by_id = {case.case_id: case for case in baseline.evaluation.cases}
+    affected_case_ids = (
+        "holdout-correctness-exact-balance",
+        "holdout-maintainability-duplicated-normalization",
+    )
+
+    for case_id in affected_case_ids:
+        case = expected_by_id[case_id]
+        actual = actual_by_id[case_id]
+        legacy = match_findings(
+            case.expected_findings,
+            actual.actual_findings,
+            matcher_version=MatcherVersion.TEXT_V1,
+        )
+        current = match_findings(
+            case.expected_findings,
+            actual.actual_findings,
+            matcher_version=MatcherVersion.TEXT_V2,
+        )
+
+        assert legacy.matches == ()
+        assert len(current.matches) == 1
+        assert current.unmatched_expected_indices == ()
+        assert current.unmatched_actual_indices == ()

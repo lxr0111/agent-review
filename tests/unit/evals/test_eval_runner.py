@@ -8,6 +8,7 @@ import pytest
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from evals.baseline import GitState
+from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.runner import (
     UnsafeEvaluationModeError,
     evaluate_case,
@@ -49,6 +50,7 @@ def test_mock_runner_is_a_perfect_evaluator_self_test_not_a_baseline() -> None:
     assert result.run_kind == "evaluator_self_test"
     assert result.provider == "mock"
     assert result.is_model_baseline is False
+    assert result.matcher_version == CURRENT_MATCHER_VERSION
     assert result.metrics.total_cases == 10
     assert result.metrics.successful_cases == 10
     assert result.metrics.passed_cases == 10
