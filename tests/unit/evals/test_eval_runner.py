@@ -3,8 +3,11 @@ from pathlib import Path
 
 import pytest
 
+from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
+from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from evals.runner import (
     UnsafeEvaluationModeError,
+    evaluate_case,
     main,
     run_mock_evaluation,
     validate_run_mode,
@@ -12,6 +15,20 @@ from evals.runner import (
 from evals.schemas import load_dataset
 
 DATASET_PATH = Path("evals/cases/review_seed_v1.json")
+
+
+class _UsageProvider:
+    model_name = "usage-test-model"
+
+    def __init__(self, output: LLMReviewOutput) -> None:
+        self._output = output
+
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
+        del prompt
+        return LLMReviewResult(
+            output=self._output,
+            usage=LLMTokenUsage(input_tokens=70, output_tokens=30, total_tokens=100),
+        )
 
 
 def test_mock_runner_is_a_perfect_evaluator_self_test_not_a_baseline() -> None:
@@ -35,6 +52,38 @@ def test_mock_runner_is_a_perfect_evaluator_self_test_not_a_baseline() -> None:
     assert result.metrics.usage.total_tokens is None
     assert result.metrics.usage.cost_usd is None
     assert {case.outcome.value for case in result.cases} == {"successful_case"}
+
+
+def test_evaluate_case_exposes_provider_usage_without_computing_cost() -> None:
+    case = load_dataset(DATASET_PATH).cases[0]
+    expected = case.expected_findings[0]
+    provider = _UsageProvider(
+        LLMReviewOutput(
+            summary="One issue found.",
+            findings=(
+                LLMReviewFinding(
+                    title=expected.description,
+                    explanation=(
+                        "Matching concepts: "
+                        + "; ".join(group[0] for group in expected.match_terms)
+                    ),
+                    suggestion="Guard the empty input.",
+                    file_path=expected.file_path,
+                    category=expected.category,
+                    severity=expected.severity,
+                    confidence=1.0,
+                ),
+            ),
+        )
+    )
+
+    result = evaluate_case(case, provider)
+
+    assert result.case_pass is True
+    assert result.usage.input_tokens == 70
+    assert result.usage.output_tokens == 30
+    assert result.usage.total_tokens == 100
+    assert result.usage.cost_usd is None
 
 
 def test_non_mock_provider_requires_explicit_live_flag() -> None:

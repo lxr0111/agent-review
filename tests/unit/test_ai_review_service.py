@@ -14,6 +14,7 @@ from app.domain.review.report import (
     ReviewRiskLevel,
 )
 from app.providers.llm import LLMProvider, MockLLMProvider
+from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.services.ai_review_service import AIReviewService
 
@@ -69,6 +70,20 @@ def _finding(
     )
 
 
+class _UsageProvider:
+    model_name = "usage-test-model"
+
+    def __init__(self, output: LLMReviewOutput) -> None:
+        self._output = output
+
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
+        del prompt
+        return LLMReviewResult(
+            output=self._output,
+            usage=LLMTokenUsage(input_tokens=40, output_tokens=10, total_tokens=50),
+        )
+
+
 def test_ai_review_maps_valid_output_to_domain_report() -> None:
     provider = MockLLMProvider(
         LLMReviewOutput(
@@ -88,6 +103,32 @@ def test_ai_review_maps_valid_output_to_domain_report() -> None:
     assert report.prompt_version == "review-v1"
     assert report.reviewed_file_count == 1
     assert len(provider.prompts) == 1
+
+
+def test_ai_review_metadata_exposes_usage_without_changing_domain_report() -> None:
+    provider = _UsageProvider(
+        LLMReviewOutput(
+            summary="One high-risk authorization issue was found.",
+            findings=(_finding(),),
+        )
+    )
+
+    result = AIReviewService(provider).review_with_metadata(_context())
+
+    assert result.report.summary == "One high-risk authorization issue was found."
+    assert result.report.model_name == "usage-test-model"
+    assert result.usage == LLMTokenUsage(input_tokens=40, output_tokens=10, total_tokens=50)
+
+
+def test_mock_provider_returns_no_usage_metadata() -> None:
+    provider = MockLLMProvider()
+
+    result = provider.generate_review(
+        ReviewPrompt(system="review", user="{}", version="review-v1")
+    )
+
+    assert result.output.summary
+    assert result.usage is None
 
 
 def test_ai_review_derives_overall_risk_from_highest_finding() -> None:
@@ -144,4 +185,17 @@ def test_ai_review_skips_model_when_no_files_are_reviewable() -> None:
     assert report.model_name is None
     assert report.reviewed_file_count == 0
     assert report.skipped_file_count == 1
+    assert provider.prompts == []
+
+
+def test_ai_review_metadata_has_no_usage_when_no_model_is_called() -> None:
+    skipped = SkippedFile(file=_file("package-lock.json"), reason=FileSkipReason.EXCLUDED_PATH)
+    provider = MockLLMProvider()
+
+    result = AIReviewService(provider).review_with_metadata(
+        _context(reviewable_files=(), skipped_files=(skipped,))
+    )
+
+    assert result.usage is None
+    assert result.report.reviewed_file_count == 0
     assert provider.prompts == []

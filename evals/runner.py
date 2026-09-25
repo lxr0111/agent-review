@@ -4,9 +4,11 @@ from pathlib import Path
 from time import perf_counter
 
 from app.providers.llm.mock import MockLLMProvider
+from app.providers.llm.protocol import LLMProvider
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.services.ai_review_service import AIReviewService
 from evals.metrics import (
+    CaseEvaluation,
     EvaluationRun,
     aggregate_metrics,
     error_case_evaluation,
@@ -35,31 +37,10 @@ def validate_run_mode(*, provider: str, live: bool) -> None:
 
 
 def run_mock_evaluation(dataset: EvalDataset) -> EvaluationRun:
-    case_results = []
+    case_results: list[CaseEvaluation] = []
     for case in dataset.cases:
         provider = MockLLMProvider(_mock_output(case), model_name="eval-self-test-mock")
-        service = AIReviewService(provider)
-        started = perf_counter()
-        try:
-            report = service.review(case.to_review_context())
-        # The runner boundary must turn every per-case failure into an evaluation outcome
-        # so one malformed response cannot abort the remaining seed cases.
-        except Exception as error:  # noqa: BLE001
-            case_results.append(
-                error_case_evaluation(
-                    case,
-                    error,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                )
-            )
-        else:
-            case_results.append(
-                successful_case_evaluation(
-                    case,
-                    report,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                )
-            )
+        case_results.append(evaluate_case(case, provider))
 
     results = tuple(case_results)
     return EvaluationRun(
@@ -70,6 +51,27 @@ def run_mock_evaluation(dataset: EvalDataset) -> EvaluationRun:
         dataset_version=dataset.dataset_version,
         cases=results,
         metrics=aggregate_metrics(dataset, results),
+    )
+
+
+def evaluate_case(case: EvalCase, provider: LLMProvider) -> CaseEvaluation:
+    service = AIReviewService(provider)
+    started = perf_counter()
+    try:
+        review_result = service.review_with_metadata(case.to_review_context())
+    # The runner boundary must turn every per-case failure into an evaluation outcome
+    # so one malformed response cannot abort the remaining seed cases.
+    except Exception as error:  # noqa: BLE001
+        return error_case_evaluation(
+            case,
+            error,
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+    return successful_case_evaluation(
+        case,
+        review_result.report,
+        latency_ms=(perf_counter() - started) * 1_000,
+        usage=review_result.usage,
     )
 
 

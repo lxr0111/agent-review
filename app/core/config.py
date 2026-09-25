@@ -33,8 +33,11 @@ class Settings(BaseSettings):
     review_max_file_patch_characters: int = Field(default=100_000, ge=1)
     review_max_total_patch_characters: int = Field(default=300_000, ge=1)
     github_review_body_max_characters: int = Field(default=60_000, ge=1_000, le=65_000)
-    llm_provider: Literal["mock", "openai"] = "mock"
+    llm_provider: Literal["mock", "openai", "deepseek"] = "mock"
     llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_api_key: SecretStr | None = None
+    # Kept for backward compatibility; prefer LLM_API_KEY for new configurations.
     openai_api_key: SecretStr | None = None
     llm_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     llm_max_output_tokens: int = Field(default=4_096, ge=1)

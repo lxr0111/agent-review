@@ -1,4 +1,4 @@
-from app.providers.llm.protocol import ReviewPrompt
+from app.providers.llm.protocol import LLMReviewResult, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewOutput
 
 
@@ -20,6 +20,6 @@ class MockLLMProvider:
     def model_name(self) -> str:
         return self._model_name
 
-    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewOutput:
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
         self.prompts.append(prompt)
-        return self._output
+        return LLMReviewResult(output=self._output, usage=None)

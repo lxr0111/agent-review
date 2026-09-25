@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.domain.review.exceptions import ReviewOutputValidationError
 from app.domain.review.report import ReviewReport
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
+from app.providers.llm.protocol import LLMTokenUsage
 from evals.matcher import match_findings
 from evals.schemas import EvalCase, EvalDataset, EvalLineRange
 
@@ -101,6 +102,7 @@ def successful_case_evaluation(
     report: ReviewReport,
     *,
     latency_ms: float,
+    usage: LLMTokenUsage | None = None,
 ) -> CaseEvaluation:
     result = match_findings(case.expected_findings, report.findings)
     details: list[FindingMatchDetail] = []
@@ -146,7 +148,7 @@ def successful_case_evaluation(
         severity_match_count=severity_matches,
         case_pass=case_pass,
         matches=tuple(details),
-        usage=EvalUsage(),
+        usage=_eval_usage(usage),
     )
 
 
@@ -251,6 +253,17 @@ def _aggregate_usage(cases: tuple[CaseEvaluation, ...]) -> EvalUsage:
         output_tokens=_sum_if_complete([case.usage.output_tokens for case in cases]),
         total_tokens=_sum_if_complete([case.usage.total_tokens for case in cases]),
         cost_usd=_sum_float_if_complete([case.usage.cost_usd for case in cases]),
+    )
+
+
+def _eval_usage(usage: LLMTokenUsage | None) -> EvalUsage:
+    if usage is None:
+        return EvalUsage()
+    return EvalUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        total_tokens=usage.total_tokens,
+        cost_usd=None,
     )
 
 

@@ -276,7 +276,7 @@ def test_client_configuration_requires_credentials() -> None:
     from app.core.config import Settings
 
     with pytest.raises(GitHubConfigurationError, match="GITHUB_APP_CLIENT_ID"):
-        GitHubApiClient.from_settings(Settings())
+        GitHubApiClient.from_settings(Settings(_env_file=None))
 
 
 def test_create_pull_request_review_posts_comment_for_explicit_commit() -> None:

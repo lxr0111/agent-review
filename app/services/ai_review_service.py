@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from app.domain.review.entities import ReviewContext
 from app.domain.review.exceptions import ReviewOutputValidationError
 from app.domain.review.report import (
@@ -7,7 +9,13 @@ from app.domain.review.report import (
     derive_review_risk,
 )
 from app.providers.llm.prompt_builder import PROMPT_VERSION, ReviewPromptBuilder
-from app.providers.llm.protocol import LLMProvider
+from app.providers.llm.protocol import LLMProvider, LLMTokenUsage
+
+
+@dataclass(frozen=True, slots=True)
+class AIReviewResult:
+    report: ReviewReport
+    usage: LLMTokenUsage | None
 
 
 class AIReviewService:
@@ -20,19 +28,26 @@ class AIReviewService:
         self._prompt_builder = prompt_builder or ReviewPromptBuilder()
 
     def review(self, context: ReviewContext) -> ReviewReport:
+        return self.review_with_metadata(context).report
+
+    def review_with_metadata(self, context: ReviewContext) -> AIReviewResult:
         if not context.reviewable_files:
-            return ReviewReport(
-                summary="No reviewable code changes were available.",
-                risk_level=ReviewRiskLevel.NONE,
-                findings=(),
-                model_name=None,
-                prompt_version=PROMPT_VERSION,
-                reviewed_file_count=0,
-                skipped_file_count=len(context.skipped_files),
+            return AIReviewResult(
+                report=ReviewReport(
+                    summary="No reviewable code changes were available.",
+                    risk_level=ReviewRiskLevel.NONE,
+                    findings=(),
+                    model_name=None,
+                    prompt_version=PROMPT_VERSION,
+                    reviewed_file_count=0,
+                    skipped_file_count=len(context.skipped_files),
+                ),
+                usage=None,
             )
 
         prompt = self._prompt_builder.build(context)
-        output = self._provider.generate_review(prompt)
+        provider_result = self._provider.generate_review(prompt)
+        output = provider_result.output
         allowed_paths = {changed_file.path for changed_file in context.reviewable_files}
         findings: list[ReviewFinding] = []
         identities: set[tuple[str, str, str]] = set()
@@ -64,12 +79,15 @@ class AIReviewService:
                 )
             )
 
-        return ReviewReport(
-            summary=output.summary,
-            risk_level=derive_review_risk(findings),
-            findings=tuple(findings),
-            model_name=self._provider.model_name,
-            prompt_version=prompt.version,
-            reviewed_file_count=len(context.reviewable_files),
-            skipped_file_count=len(context.skipped_files),
+        return AIReviewResult(
+            report=ReviewReport(
+                summary=output.summary,
+                risk_level=derive_review_risk(findings),
+                findings=tuple(findings),
+                model_name=self._provider.model_name,
+                prompt_version=prompt.version,
+                reviewed_file_count=len(context.reviewable_files),
+                skipped_file_count=len(context.skipped_files),
+            ),
+            usage=provider_result.usage,
         )

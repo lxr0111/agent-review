@@ -54,9 +54,10 @@ def _response_payload(
     *,
     output_text: str | None = None,
     status: str = "completed",
+    include_usage: bool = True,
 ) -> dict[str, object]:
     text = output_text if output_text is not None else _structured_output().model_dump_json()
-    return {
+    payload: dict[str, object] = {
         "id": "resp_123",
         "status": status,
         "output": [
@@ -73,6 +74,15 @@ def _response_payload(
             }
         ],
     }
+    if include_usage:
+        payload["usage"] = {
+            "input_tokens": 120,
+            "input_tokens_details": {"cached_tokens": 20},
+            "output_tokens": 35,
+            "output_tokens_details": {"reasoning_tokens": 5},
+            "total_tokens": 155,
+        }
+    return payload
 
 
 def _provider(handler) -> OpenAIResponsesProvider:
@@ -137,8 +147,26 @@ def test_generate_review_uses_responses_api_json_schema() -> None:
     result = provider.generate_review(_prompt())
 
     assert isinstance(provider, LLMProvider)
-    assert result == _structured_output()
+    assert result.output == _structured_output()
+    assert result.usage is not None
+    assert result.usage.input_tokens == 120
+    assert result.usage.output_tokens == 35
+    assert result.usage.total_tokens == 155
     assert provider.model_name == "test-structured-model"
+
+
+def test_generate_review_allows_missing_usage() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_response_payload(include_usage=False),
+            request=request,
+        )
+
+    result = _provider(handler).generate_review(_prompt())
+
+    assert result.output == _structured_output()
+    assert result.usage is None
 
 
 @pytest.mark.parametrize(
@@ -296,8 +324,10 @@ def test_provider_requires_openai_credentials_and_model() -> None:
     with pytest.raises(LLMConfigurationError, match="OPENAI_API_KEY"):
         OpenAIResponsesProvider.from_settings(
             Settings(
+                _env_file=None,
                 llm_provider="openai",
                 llm_model="test-model",
+                llm_api_key=None,
                 openai_api_key=None,
             )
         )
@@ -305,8 +335,10 @@ def test_provider_requires_openai_credentials_and_model() -> None:
     with pytest.raises(LLMConfigurationError, match="LLM_MODEL"):
         OpenAIResponsesProvider.from_settings(
             Settings(
+                _env_file=None,
                 llm_provider="openai",
                 llm_model=None,
+                llm_api_key=None,
                 openai_api_key=SecretStr(API_KEY),
             )
         )
