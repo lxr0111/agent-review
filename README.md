@@ -83,19 +83,33 @@ to observe `current_stage`, `attempt_count`, and the terminal status.
 
 AI review uses a provider interface so application services do not depend on a model
 vendor. Local development defaults to the deterministic mock provider and makes no
-paid API requests. To use the OpenAI Responses API, configure a model that supports
-structured outputs and provide the API key only through the environment:
+paid API requests. Provider-neutral credentials and endpoints are configured only
+through the environment.
+
+To use the OpenAI Responses API, configure a model that supports structured outputs:
 
 ```text
 LLM_PROVIDER=openai
 LLM_MODEL=your-structured-output-capable-model
-OPENAI_API_KEY=your-api-key
+LLM_API_KEY=your-api-key
 ```
 
-The OpenAI adapter requests a strict JSON Schema response, disables response storage,
-validates the returned report with Pydantic, and classifies authentication, permission,
-rate-limit, transient, refusal, and invalid-output failures. Model names are deliberately
-not hard-coded. Automated tests use an HTTP mock and never call the paid API.
+To use DeepSeek's Responses API:
+
+```text
+LLM_PROVIDER=deepseek
+LLM_BASE_URL=https://api.deepseek.com/
+LLM_MODEL=deepseek-flash
+LLM_API_KEY=your-deepseek-api-key
+```
+
+The shared Responses API transport applies the same sanitized JSON Schema and Pydantic
+validation to every provider. Thin provider adapters retain vendor-specific compatibility:
+OpenAI enables strict schema enforcement and disables response storage explicitly, while
+DeepSeek omits unsupported OpenAI-only options. Authentication, permission, rate-limit,
+transient, refusal, and invalid-output failures remain provider-neutral to the application
+service. `OPENAI_API_KEY` remains a deprecated compatibility fallback for existing local
+OpenAI configurations. Automated tests use an HTTP mock and never call paid APIs.
 
 ## Quality checks
 
@@ -117,4 +131,8 @@ pytest
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the complete roadmap and
 [PHASE1_IMPLEMENTATION_AND_INTERVIEW_GUIDE.md](PHASE1_IMPLEMENTATION_AND_INTERVIEW_GUIDE.md)
-for the implemented Phase 0–1 architecture and interview guide.
+for the implemented Phase 0–1 architecture and interview guide. Controlled retry and
+recovery drills are documented in [FAULT_INJECTION_GUIDE.md](FAULT_INJECTION_GUIDE.md).
+The ongoing implementation history, verification evidence, and interview narrative are
+maintained in
+[PROJECT_EVOLUTION_AND_INTERVIEW_GUIDE.md](PROJECT_EVOLUTION_AND_INTERVIEW_GUIDE.md).
