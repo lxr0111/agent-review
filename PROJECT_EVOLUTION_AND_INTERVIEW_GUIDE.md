@@ -893,9 +893,90 @@ evals/baselines/deepseek-flash__review-v2__seed-v1.json
 - 当前只有 10 个手工案例，样本规模小且缺陷模式较清晰；
 - 每个 Prompt 版本只有一次完整运行，尚未测量模型随机性和重复运行方差；
 - `1.0` 是本次固定种子集结果，不代表真实仓库或生产环境准确率；
-- Dataset 参与了 Prompt 问题诊断，后续需要新增未参与调优的 holdout set，降低对 `seed-v1` 过拟合的风险；
+- Dataset 参与了 Prompt 问题诊断；现已新增未参与 Prompt v2 调优的 holdout set，但尚未执行真实模型验证；
 - 当前没有版本化价格快照，不能把 Token 换算为可复现成本；
 - 延迟结果没有控制网络与供应商负载，不能作为性能承诺。
+
+---
+
+### 3.13 冻结的 Holdout 泛化验证集
+
+#### 问题
+
+Prompt v2 在 `seed-v1` 上得到完美单次结果，但 `seed-v1` 已经参与过误报分析和 Prompt 设计。继续只在同一批案例上评测，会把“对开发集优化”误当成“能够泛化到新问题”。在进入多 Agent 阶段前，需要一份 Prompt v2 从未见过的固定验证集。
+
+#### 数据集角色
+
+- `review_seed_v1.json`：开发集，用于定位 Prompt v1 的错误模式并设计 Prompt v2；
+- `review_holdout_v1.json`：冻结验证集，在 Prompt v2 提交后创建，用于第一次泛化检查；
+- 两者都遵循 `review-eval-v1` Schema，但 Dataset Version、Case ID 和 Patch 内容互不重复；
+- Holdout 的模型结果不能反向用于悄悄修改标签或 Prompt。需要继续迭代时，应新增 Dataset Version 或新的验证集。
+
+#### Holdout 组成
+
+`holdout-v1` 共 10 个案例、8 个预期 Finding、2 个 negative samples，并包含两个多文件案例：
+
+| 类别 | 案例 |
+|---|---|
+| Correctness | 跨文件折扣百分比/小数单位错误；精确余额被错误拒绝 |
+| Security | Shell 命令注入；删除发票缺少 owner/admin 鉴权 |
+| Performance | async 中使用阻塞 sleep；循环中重复排序和搜索 |
+| Reliability | loader 异常导致 Lock 永久未释放 |
+| Maintainability | Email canonicalization 规则复制到三个业务流程 |
+| Negative | 参数列表形式安全调用 subprocess；跨文件安全解析并校验上传目录边界 |
+
+案例选择原则：
+
+- 不复用 `seed-v1` 的 Case ID 或 Patch；
+- 问题必须能从 PR 描述和 Diff 直接证明；
+- 继续覆盖 correctness、security、performance、reliability、maintainability；
+- Negative samples 专门检查 Prompt v2 的证据边界和安全降噪；
+- 多文件案例检查模型能否跨文件理解 API 契约，而不是只看单文件片段。
+
+#### 冻结机制
+
+测试固定以下 SHA-256：
+
+```text
+9902805446cea36d711bdb8450f64609633ac6599099dc5810726c78f302567c
+```
+
+自动化测试同时检查：
+
+- Dataset Version 为 `holdout-v1`；
+- 恰好 10 个案例和 2 个 negative samples；
+- 与 `seed-v1` 的 Case ID、Patch 完全隔离；
+- 五个目标 Category 均被覆盖；
+- 预期 Finding 总数为 8；
+- 至少存在一个多文件案例；
+- Mock self-test 达到完整匹配，但明确不是模型质量 baseline。
+
+固定 SHA 的目的不是阻止合理修改，而是让任何修改都必须显式升级预期 Hash 并接受代码评审，防止看到模型答案后无意调整题目或标签。
+
+#### 自动化验证结果
+
+```text
+Eval tests: 35 passed
+All tests: 201 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (84 source files)
+git diff --check: passed
+Holdout Mock CLI: 10/10 case pass, usage remained null
+```
+
+这些是数据结构、隔离规则和评测器自测结果，不是 DeepSeek 质量结果。本批没有调用真实模型；必须在数据集提交并冻结后才能进行第一次 live holdout baseline。
+
+#### 面试怎么讲
+
+> Prompt v2 在开发集上达到满分后，我没有继续把这个结果当作泛化能力，而是先冻结一套新的 holdout。它与开发集的 Case ID 和 Patch 完全隔离，覆盖新的正确性、安全、性能、可靠性和多文件场景，并用 SHA-256 测试防止看到模型输出后调整标签。这样后续多 Agent 或 Prompt 改造可以分别看开发集回归和未参与调优数据上的表现。
+
+#### 准确边界与尚未完成
+
+- Holdout 仍是人工设计的 10 个小案例，不等于真实 PR 分布；
+- 文件在仓库中可见，属于工程上的冻结验证集，不是对开发者完全隐藏的盲测集；
+- 当前只完成 Mock self-test，尚无 DeepSeek holdout 结果；
+- 运行一次仍无法估计随机性，后续需要重复运行或更大的真实 PR 样本；
+- 在首次 live 结果产生前，不应根据猜测继续修改 Prompt v2。
 
 ---
 
@@ -929,8 +1010,8 @@ evals/baselines/deepseek-flash__review-v2__seed-v1.json
 
 ### 4.3 评测基础
 
-- 10 个固定种子案例；
-- 2 个 negative samples；
+- 10 个开发集案例和 10 个冻结 Holdout 案例；
+- 两个数据集各包含 2 个 negative samples；
 - 确定性 Matcher；
 - Recall、误报、类别、严重程度、Schema、Case Pass 和 latency 指标；
 - Mock evaluator self-test；
@@ -939,7 +1020,8 @@ evals/baselines/deepseek-flash__review-v2__seed-v1.json
 - 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline；
 - 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator；
 - 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2；
-- 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline。
+- 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline；
+- 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集。
 
 ### 4.4 安全边界
 
@@ -964,7 +1046,7 @@ evals/baselines/deepseek-flash__review-v2__seed-v1.json
 1. **可运行**：FastAPI、Celery、Redis、MySQL、GitHub App、DeepSeek 组成真实闭环。
 2. **可恢复**：Webhook、Task、Report 和 Publication 都有幂等策略；可恢复错误重试，永久错误快速失败。
 3. **可验证**：使用 Fault Stub 可控注入 Timeout、429、500、503、401 和非法输出，用日志和数据库共同验收。
-4. **可评估**：固定 10 个 seed cases，计算 Recall、误报、类别、严重程度、Schema 和 Case Pass，避免只凭一次 Demo 判断模型质量。
+4. **可评估**：区分开发集和冻结 Holdout，计算 Recall、Precision、F1、误报、类别、严重程度、Schema 和 Case Pass，避免只凭一次 Demo 或调优过的数据判断模型质量。
 
 ### 5.3 五分钟技术深挖顺序
 
@@ -1066,12 +1148,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | 受保护的 Live Eval | 192 | 显式 live 开关、低成本试跑、Baseline 安全写入与可复现元数据 |
 | Baseline Comparator | 197 | Dataset 身份校验、派生指标、逐案例 Finding 与标签差异 |
 | Prompt v2 | 198 | 证据约束、测试降噪、上下文边界与 Severity Rubric |
+| Holdout v1 | 201 | 冻结 SHA、开发集隔离、类别/负例/多文件覆盖与 Mock 自测 |
 
 当前最近一次结果：
 
 ```text
-Prompt/AI/Eval targeted tests: 44 passed
-All tests: 198 passed, 2 third-party deprecation warnings
+Eval tests: 35 passed
+All tests: 201 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (84 source files)
 git diff --check: passed
@@ -1100,10 +1183,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 Prompt v2 baseline 和真实回归说明；
-2. 建立不参与 Prompt v2 调优的 holdout cases，作为泛化能力检查；
-3. 对关键 Prompt 版本做重复运行，记录均值、方差和稳定性；
-4. Dataset 内容变化时升级 Dataset Version，不覆盖 `seed-v1` 历史证据；
+1. 提交并冻结 `holdout-v1`；
+2. 在不修改 Prompt 的前提下运行第一次 DeepSeek holdout baseline；
+3. 固化 holdout 结果后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
+4. 对关键架构版本做重复运行，记录均值、方差和稳定性；
 5. 在获得更多历史结果后定义回归阈值，并使用显式价格快照计算 cost。
 
 ### 9.2 后续能力

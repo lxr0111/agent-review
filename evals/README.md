@@ -9,6 +9,30 @@ baselines preserve the before/after evidence for the same `seed-v1` dataset. Tre
 immutable historical references; create a new prompt or dataset version instead of overwriting
 them.
 
+The datasets have different roles:
+
+- `review_seed_v1.json` is the development set used to diagnose and improve `review-v1`.
+- `review_holdout_v1.json` is a frozen generalization check created after `review-v2`. It has 10
+  disjoint cases, including two negatives and two multi-file cases. Do not tune the prompt or
+  rewrite labels from its model results; create a new dataset version for future changes.
+
+The holdout file is guarded by a SHA-256 assertion in the unit tests. Run its offline evaluator
+self-test with:
+
+```powershell
+python -m evals.runner --dataset evals/cases/review_holdout_v1.json
+```
+
+Run the first guarded live holdout baseline only after committing the frozen dataset:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_holdout_v1.json `
+  --provider deepseek `
+  --live `
+  --save-baseline
+```
+
 Run it from the repository root:
 
 ```powershell
