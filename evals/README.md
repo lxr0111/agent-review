@@ -4,8 +4,10 @@
 uses a case-specific mock response to test the evaluator, matcher, and metric calculations.
 Its result is an evaluator self-test, not a model-quality baseline.
 
-The current code uses prompt version `review-v2`. The checked-in `review-v1` baseline remains an
-immutable historical reference; a `review-v2` baseline has not been generated yet.
+The current code uses prompt version `review-v2`. Checked-in `review-v1` and `review-v2`
+baselines preserve the before/after evidence for the same `seed-v1` dataset. Treat both files as
+immutable historical references; create a new prompt or dataset version instead of overwriting
+them.
 
 Run it from the repository root:
 

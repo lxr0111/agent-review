@@ -1,0 +1,491 @@
+{
+  "baseline_schema_version": "agent-review-model-baseline-v1",
+  "evaluation": {
+    "run_kind": "live_evaluation",
+    "provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "prompt_version": "review-v2",
+    "is_model_baseline": true,
+    "schema_version": "review-eval-v1",
+    "dataset_version": "seed-v1",
+    "dataset_sha256": "dcb3cd4af05dd8670b6da06c81dd51d719cf948264dc51c4da7cc66edf956e2d",
+    "dataset_case_count": 10,
+    "executed_case_count": 10,
+    "git_commit": "f111d2d902230f7e438f1089e46f68c76a38933b",
+    "git_dirty": false,
+    "executed_at": "2026-09-25T05:00:25.896790Z",
+    "cases": [
+      {
+        "case_id": "correctness-empty-average",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2588.0990000005113,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "Adds a three-line `calculate_average` helper in `src/statistics.py`. It uses `sum(values) / len(values)`, which raises `ZeroDivisionError` on an empty input sequence. No contract in the PR description addresses empty input, so the crash is an unhandled edge case rather than an intentional API choice.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "calculate_average raises ZeroDivisionError on empty input",
+            "explanation": "The function divides by `len(values)` without guarding against an empty sequence. Calling `calculate_average([])` performs `0 / 0` and raises `ZeroDivisionError` instead of returning a defined value or raising a meaningful error. Any caller that can legitimately pass an empty collection (e.g., a group with no samples) will crash with an opaque arithmetic error rather than a clear signal.",
+            "suggestion": "Handle the empty case explicitly, e.g. return 0 (or a documented sentinel such as `float('nan')`) when `not values`, or raise `ValueError('calculate_average requires at least one value')` so callers get a meaningful error. Add a regression test covering `calculate_average([])` alongside the normal-path test.",
+            "file_path": "src/statistics.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "empty-input-zero-division",
+            "actual_title": "calculate_average raises ZeroDivisionError on empty input",
+            "file_path": "src/statistics.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 3
+            },
+            "score": 0.9,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 985,
+          "output_tokens": 385,
+          "total_tokens": 1370,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "correctness-off-by-one",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 1949.65190000039,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The new batch helper iterates one element short: `range(len(values) - 1)` skips the final queued value, contradicting the stated goal of processing every queued item.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Off-by-one loop skips the last queued value",
+            "explanation": "`process_all` uses `range(len(values) - 1)`, so for a list of n values only indices 0..n-2 are processed. The last element is never passed to `process`, directly contradicting the PR's stated behavior of processing every queued item. For a single-element list nothing is processed at all, and for an empty list the expression `len(values) - 1` yields -1, which `range` treats as empty (so it does not crash, but the silently skipped items remain a correctness bug).",
+            "suggestion": "Iterate over all elements, e.g. `for value in values: process(value)`, or use `range(len(values))` if index access is required. Add a regression test asserting that every item (including the last, and a single-item input) is passed to `process`.",
+            "file_path": "src/batch.py",
+            "severity": "medium",
+            "category": "correctness",
+            "confidence": 0.95
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "last-item-skipped",
+            "actual_title": "Off-by-one loop skips the last queued value",
+            "file_path": "src/batch.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 3
+            },
+            "score": 0.9384615384615385,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 992,
+          "output_tokens": 371,
+          "total_tokens": 1363,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "security-sql-injection",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2418.624699999782,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The added helper builds a SQL query by interpolating the `email` argument directly into the statement string, creating a classic SQL injection vulnerability. Any caller passing untrusted input (e.g. an email from a request) can alter the query, bypassing the intended lookup and potentially reading, modifying, or deleting arbitrary data depending on the database and cursor permissions.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "SQL injection via f-string interpolation in find_user",
+            "explanation": "`find_user` constructs the query as `f\"SELECT * FROM users WHERE email = '{email}'\"` and executes it. Because `email` is inserted into the SQL text rather than bound as a parameter, a value such as `' OR '1'='1` (or a statement-terminating payload) changes the semantics of the query. This is a directly exploitable SQL injection: the caller's input controls the executed SQL, enabling authentication bypass, unauthorized data disclosure, and — where the connection permits stacked statements or writes — data modification or destruction.",
+            "suggestion": "Use a parameterized query with a placeholder appropriate for the DB-API driver, e.g. `cursor.execute(\"SELECT * FROM users WHERE email = %s\", (email,)).fetchone()` (or `?` for sqlite3), and never interpolate values into SQL text. Add a regression test asserting that a malicious email such as `\"' OR '1'='1\"` is treated as a literal string and returns no unintended rows.",
+            "file_path": "src/users.py",
+            "severity": "high",
+            "category": "security",
+            "confidence": 0.97
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "email-sql-injection",
+            "actual_title": "SQL injection via f-string interpolation in find_user",
+            "file_path": "src/users.py",
+            "expected_range": {
+              "start_line": 2,
+              "end_line": 3
+            },
+            "score": 0.8833333333333334,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 998,
+          "output_tokens": 368,
+          "total_tokens": 1366,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "security-path-traversal",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3532.851500000106,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The new `read_upload` helper builds a filesystem path by joining a fixed upload root with an unvalidated caller-supplied filename, then reads it directly. Pathlib's `/` operator discards the left operand when the right side is absolute, and relative segments like `../../` are not normalized or rejected, so the function can read arbitrary files outside `/srv/uploads`. This is a classic path-traversal / arbitrary-file-read defect introduced entirely by the added code.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Path traversal / arbitrary file read in read_upload",
+            "explanation": "`(UPLOAD_ROOT / filename).read_bytes()` performs no validation or containment check on `filename`. Two concrete bypasses exist: (1) an absolute filename such as `/etc/passwd` causes pathlib to discard `UPLOAD_ROOT` entirely, since joining an absolute path replaces the base; (2) a relative filename containing `../` (e.g. `../../etc/passwd`, or many `../` to escape the root) resolves outside `/srv/uploads` once the OS resolves the path. The result is that any file readable by the server process can be returned to the caller, which can expose credentials, configuration, or other users' uploads. Unresolved symlinks inside the upload directory would be a further escape vector. This directly undermines the intended behavior of serving an uploaded document by filename.",
+            "suggestion": "Validate before reading. Resolve the candidate path and verify it stays within the upload root, and reject absolute inputs, e.g.:\n```python\nUPLOAD_ROOT = Path('/srv/uploads').resolve()\n\ndef read_upload(filename):\n    candidate = (UPLOAD_ROOT / filename).resolve()\n    if candidate != UPLOAD_ROOT and UPLOAD_ROOT not in candidate.parents:\n        raise ValueError('invalid filename')\n    return candidate.read_bytes()\n```\nAdditionally reject filenames that are absolute or contain path separators if only flat filenames are expected, and consider `os.open` with `O_NOFOLLOW` or equivalent hardening if symlink escapes are a concern. Add a regression test that asserts an input like `../../etc/passwd` and an absolute path such as `/etc/passwd` both raise rather than returning file contents.",
+            "file_path": "src/uploads.py",
+            "severity": "high",
+            "category": "security",
+            "confidence": 0.97
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "uncontained-upload-path",
+            "actual_title": "Path traversal / arbitrary file read in read_upload",
+            "file_path": "src/uploads.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9600000000000001,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1001,
+          "output_tokens": 730,
+          "total_tokens": 1731,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "performance-n-plus-one",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2490.0558999997884,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The change introduces a straightforward N+1 query pattern: it loads all orders in one query, then issues one additional `db.get` per order to fetch the customer. For any non-trivial order count this multiplies database round-trips linearly and is the kind of performance defect this PR is expected to surface.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "N+1 query when attaching customers to orders",
+            "explanation": "`load_orders_with_customers` first fetches every order with a single query, then loops over the result and calls `db.get(Customer, order.customer_id)` inside the loop. That produces 1 + N queries (one per order), so database round-trips and latency grow linearly with the number of orders. Loading a page of hundreds or thousands of orders will be dramatically slower than necessary and can saturate the connection pool under concurrent requests.",
+            "suggestion": "Fetch orders and customers in a single query using a join/eager-load (e.g. `db.query(Order).options(joinedload(Order.customer)).all()` or an explicit join on the customer table / `IN` lookup on the collected customer_ids), and add a regression test that counts executed queries to assert the customer load stays constant regardless of order count.",
+            "file_path": "src/orders.py",
+            "severity": "medium",
+            "category": "performance",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "customer-n-plus-one",
+            "actual_title": "N+1 query when attaching customers to orders",
+            "file_path": "src/orders.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9384615384615385,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1015,
+          "output_tokens": 334,
+          "total_tokens": 1349,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "performance-quadratic-membership",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 3237.809300000663,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The added `find_duplicates` is functionally plausible for a list input, but it performs an O(n) `values.count(value)` scan for every element and an O(n) `value not in duplicates` membership check, making it O(n²) in both time and comparisons. This is the only concrete defect introduced by the change.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Quadratic duplicate detection via repeated count() and list membership",
+            "explanation": "For each element the function calls `values.count(value)`, which scans the entire input, giving O(n²) time; the additional `value not in duplicates` check adds another O(n) scan per element. On large inputs this becomes a material performance problem (e.g. 100k elements ⇒ ~10^10 comparisons) and can stall the caller, even though the result is correct.",
+            "suggestion": "Track seen values in a hash-based structure so each element is examined once, e.g. build a `seen` set and a `duplicates` set/list while iterating: append `value` to the result the first time it is seen again. Note that a set-based solution requires hashable elements, so if unhashable inputs must be supported, fall back to the current approach or document the requirement. Add a regression test with a large input (e.g. 100k elements) to guard against reintroducing the quadratic path.",
+            "file_path": "src/duplicates.py",
+            "severity": "medium",
+            "category": "performance",
+            "confidence": 0.9
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "repeated-linear-count",
+            "actual_title": "Quadratic duplicate detection via repeated count() and list membership",
+            "file_path": "src/duplicates.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 4
+            },
+            "score": 0.9076923076923078,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1018,
+          "output_tokens": 560,
+          "total_tokens": 1578,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "maintainability-duplicated-rule",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2757.372199999736,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The change adds three channel-specific free-shipping helpers that are byte-identical in behavior, duplicating the same business threshold (100) in three places. There is no shared source of truth, so a future change to the eligibility rule must be made in three locations and can easily drift, producing inconsistent free-shipping decisions across web, mobile, and partner callers.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "Duplicated free-shipping threshold across three channel helpers",
+            "explanation": "`web_free_shipping`, `mobile_free_shipping`, and `partner_free_shipping` all implement the same rule (`order_total >= 100`) with the literal `100` repeated three times. Nothing in the change ties these together, so any future update to the eligibility threshold or comparison must be replicated in every function; missing one silently yields different free-shipping outcomes per channel, which is a customer-facing billing inconsistency. A single shared predicate (optionally with the threshold as a named constant) would keep the channels in sync while still exposing per-channel entry points if needed.",
+            "suggestion": "Extract the rule into one implementation, e.g. define `FREE_SHIPPING_THRESHOLD = 100` and a single `is_free_shipping_eligible(order_total)` (or have the three channel functions delegate to it), so the threshold and comparison exist in exactly one place. Add a test asserting all three channel functions agree on boundary values (e.g. 99.99, 100) to lock in the shared behavior.",
+            "file_path": "src/shipping.py",
+            "severity": "low",
+            "category": "maintainability",
+            "confidence": 0.95
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "copied-shipping-threshold",
+            "actual_title": "Duplicated free-shipping threshold across three channel helpers",
+            "file_path": "src/shipping.py",
+            "expected_range": {
+              "start_line": 1,
+              "end_line": 8
+            },
+            "score": 0.5076923076923077,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1039,
+          "output_tokens": 427,
+          "total_tokens": 1466,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "reliability-unclosed-file",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2181.8499000000884,
+        "expected_finding_count": 1,
+        "actual_finding_count": 1,
+        "matched_finding_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 1,
+        "severity_match_count": 1,
+        "case_pass": true,
+        "summary": "The PR adds a `load_config` helper that reads JSON from disk. It opens a file handle and never closes it, leaking a file descriptor on every call.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [
+          {
+            "title": "File handle is never closed in load_config",
+            "explanation": "`open(path, encoding='utf-8')` returns a file object that is never closed. Because the handle is passed directly to `json.load` and no context manager or `close()` is used, the file descriptor stays open until it is garbage-collected. In long-running processes that call `load_config` repeatedly, this can exhaust available file descriptors and also leaves the file locked/unsynced on platforms where that matters. If `json.load` raises (malformed JSON, encoding error), the leak is deterministic since nothing releases the handle.",
+            "suggestion": "Use a context manager so the handle is always released: `with open(path, encoding='utf-8') as handle: return json.load(handle)`. Add a regression test that calls the loader with invalid JSON under a low file-descriptor limit (or asserts the handle is closed) to confirm no descriptor leak on both success and failure paths.",
+            "file_path": "src/config_loader.py",
+            "severity": "medium",
+            "category": "reliability",
+            "confidence": 0.95
+          }
+        ],
+        "matches": [
+          {
+            "expected_id": "file-handle-not-closed",
+            "actual_title": "File handle is never closed in load_config",
+            "file_path": "src/config_loader.py",
+            "expected_range": {
+              "start_line": 3,
+              "end_line": 5
+            },
+            "score": 0.942857142857143,
+            "category_match": true,
+            "severity_match": true
+          }
+        ],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 371,
+          "total_tokens": 1371,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "negative-safe-average",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2016.525900000488,
+        "expected_finding_count": 0,
+        "actual_finding_count": 0,
+        "matched_finding_count": 0,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": true,
+        "summary": "The patch adds a small, self-contained `calculate_average` helper in src/safe_statistics.py. The empty-input guard matches the documented contract in the PR body (\"Return None when no values are supplied\"), and the division is protected against a zero-length denominator, so no correctness, security, or reliability defect is introduced by this change.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 989,
+          "output_tokens": 272,
+          "total_tokens": 1261,
+          "cost_usd": null
+        }
+      },
+      {
+        "case_id": "negative-parameterized-query",
+        "outcome": "successful_case",
+        "schema_valid": true,
+        "latency_ms": 2201.4877000001434,
+        "expected_finding_count": 0,
+        "actual_finding_count": 0,
+        "matched_finding_count": 0,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "category_match_count": 0,
+        "severity_match_count": 0,
+        "case_pass": true,
+        "summary": "The change adds `find_user` in `src/safe_users.py`, which resolves the ORDER BY clause through a fixed allow-list mapping (`ALLOWED_SORTS`) and passes the user-supplied `email` as a bound parameter (`%s` with a tuple). The f-string only ever interpolates a value that must be one of the two hard-coded literals ('created_at' or 'display_name'), so no user-controlled data reaches the SQL text. There is no SQL injection, no authorization or data-exposure regression, and no functional defect demonstrated by the supplied patch. No findings.",
+        "model_name": "deepseek-flash",
+        "prompt_version": "review-v2",
+        "actual_findings": [],
+        "matches": [],
+        "error_type": null,
+        "usage": {
+          "input_tokens": 1066,
+          "output_tokens": 327,
+          "total_tokens": 1393,
+          "cost_usd": null
+        }
+      }
+    ],
+    "metrics": {
+      "total_cases": 10,
+      "successful_cases": 10,
+      "transport_errors": 0,
+      "provider_errors": 0,
+      "schema_errors": 0,
+      "passed_cases": 10,
+      "case_pass_rate": 1.0,
+      "expected_findings": 8,
+      "matched_findings": 8,
+      "recall": 1.0,
+      "false_positives": 0,
+      "false_positives_per_case": 0.0,
+      "negative_sample_false_positives": 0,
+      "category_match": 1.0,
+      "severity_match": 1.0,
+      "schema_validity": 1.0,
+      "latency_mean_ms": 2537.4328000001697,
+      "latency_p50_ms": 2418.624699999782,
+      "latency_p95_ms": 3532.851500000106,
+      "usage": {
+        "input_tokens": 10103,
+        "output_tokens": 4145,
+        "total_tokens": 14248,
+        "cost_usd": null
+      }
+    }
+  }
+}

@@ -782,6 +782,123 @@ git diff --check: passed
 
 ---
 
+### 3.12 Prompt v2 真实 Baseline 与回归对比
+
+#### 验证方法
+
+Prompt v2 提交后，先执行一个真实 DeepSeek 案例，确认空列表除零仍能命中、Severity 为 `medium`，并且不再额外生成“缺少测试”。随后临时收起个人文件，在干净工作区运行完整评测：
+
+```powershell
+python -m evals.runner --provider deepseek --live --save-baseline
+```
+
+最后使用纯离线 Comparator 比较两个相同数据集的结果：
+
+```powershell
+python -m evals.compare `
+  --baseline evals/baselines/deepseek-flash__review-v1__seed-v1.json `
+  --candidate evals/baselines/deepseek-flash__review-v2__seed-v1.json
+```
+
+这种顺序把三个问题分开：单案例先验证链路和基本行为，完整 baseline 提供真实模型输出，Comparator 再负责可重复的差异计算。比较阶段不访问网络，也不会再次产生模型费用。
+
+#### 可复现元数据
+
+```text
+Provider: deepseek
+Model: deepseek-flash
+Prompt version: review-v2
+Dataset version: seed-v1
+Dataset SHA-256: dcb3cd4af05dd8670b6da06c81dd51d719cf948264dc51c4da7cc66edf956e2d
+Git commit: f111d2d902230f7e438f1089e46f68c76a38933b
+Git dirty: false
+Executed cases: 10/10
+Transport errors: 0
+Provider errors: 0
+Schema errors: 0
+```
+
+原始结果保存为：
+
+```text
+evals/baselines/deepseek-flash__review-v2__seed-v1.json
+```
+
+#### 核心质量指标
+
+| 指标 | review-v1 | review-v2 | 变化 |
+|---|---:|---:|---:|
+| Recall | 1.0 | 1.0 | 持平 |
+| Precision | 0.4444 | 1.0 | +0.5556 |
+| F1 | 0.6154 | 1.0 | +0.3846 |
+| False Positives | 10 | 0 | -10 |
+| False Positives / Case | 1.0 | 0.0 | -1.0 |
+| Negative Sample False Positives | 4 | 0 | -4 |
+| Negative Sample Case Pass Rate | 0.0 | 1.0 | +1.0 |
+| Category Match | 1.0 | 1.0 | 持平 |
+| Severity Match | 0.25 | 1.0 | +0.75 |
+| Case Pass Rate | 0.1 | 1.0 | +0.9 |
+| Schema Validity | 1.0 | 1.0 | 持平 |
+
+结果说明 Prompt v2 在这一轮 `seed-v1` 上保留了全部 8 个预期缺陷和正确 Category，同时去除了全部 10 个额外 Finding，并使 8 个匹配 Finding 的 Severity 全部符合预期。10 个案例均满足严格 Case Pass：预期问题全部命中、没有额外问题、Category 和 Severity 均正确。
+
+#### 逐案例变化
+
+| 案例 | review-v1 的主要问题 | review-v2 结果 |
+|---|---|---|
+| 空列表除零 | 额外报告缺少测试；Severity `high` | 只保留正确性问题；`medium` |
+| Off-by-one | 推测 `process` 未定义；Severity `high` | 删除上下文推测；`medium` |
+| SQL 注入 | 额外报告缺少测试；Severity `critical` | 只保留 SQL 注入；`high` |
+| 目录穿越 | 额外报告缺少测试；Severity `critical` | 只保留任意文件读取风险；`high` |
+| N+1 查询 | 额外报告缺少测试；Severity `high` | 只保留性能问题；`medium` |
+| O(n²) 查找 | 原结果已经准确 | 继续保持 `performance/medium` |
+| 重复业务规则 | Severity `medium` | 校准为 `maintainability/low` |
+| 文件未关闭 | 额外报告缺少测试 | 只保留 `reliability/medium` |
+| 正确处理空列表 | 质疑 `None` 契约、臆测 iterator，并报告缺少测试 | 返回空 Findings |
+| 安全参数化查询 | 臆测 Cursor 链式调用不兼容 | 返回空 Findings |
+
+一共删除了 6 条泛化 Testing Finding、1 条“函数未定义”推测、2 条违反明确契约/输入边界的推测，以及 1 条数据库 Driver 行为推测。Severity Rubric 同时校准了 6 个 Finding；另外两个正例原本已经匹配，因此最终 Severity Match 从 `0.25` 提升到 `1.0`。
+
+#### Token 与延迟
+
+| 指标 | review-v1 | review-v2 | 变化 |
+|---|---:|---:|---:|
+| Input Tokens | 6,623 | 10,103 | +3,480（约 +52.5%） |
+| Output Tokens | 7,707 | 4,145 | -3,562（约 -46.2%） |
+| Total Tokens | 14,330 | 14,248 | -82（约 -0.6%） |
+| Mean Latency | 4,187.20 ms | 2,537.43 ms | -1,649.77 ms |
+| P50 Latency | 3,324.53 ms | 2,418.62 ms | -905.90 ms |
+| P95 Latency | 8,722.74 ms | 3,532.85 ms | -5,189.89 ms |
+
+更详细的 Prompt 增加了输入 Token，但降噪后输出显著缩短，因此总 Token 基本持平。延迟在本轮下降，但每个版本只有一次 10-case 运行，且受供应商负载、网络和生成长度影响，不能把这一结果描述成已证明的性能优化。
+
+#### 为什么这次优化有效
+
+- Testing Policy 直接消除了“新增代码没有测试”这类模板化额外意见，但仍把回归测试建议保留在真实缺陷的 suggestion 中；
+- Evidence Policy 阻止模型把 Diff 缺少上下文误认为符号缺失，也阻止对未说明的 Driver 和输入类型做假设；
+- Contract Policy 让模型尊重 PR 已明确声明的 `None` 返回语义；
+- Severity Rubric 用现实影响而不是假设的最坏情况定级，减少了 `high/critical` 膨胀；
+- Dataset 和模型保持不变，因此差异主要来自 Prompt 版本，而不是换题或改标签。
+
+#### 面试怎么讲
+
+可以按以下结构说明：
+
+> 第一版模型召回率是 100%，但 Precision 只有 44.4%，还存在严重级别膨胀。我没有直接删除模型输出，而是先固定 10 个案例、保存带 Git 和 Dataset SHA 的 baseline，再逐项分析误报来源。随后在 Prompt v2 中加入证据边界、契约尊重、Testing 去重和 Severity Rubric，并保持模型和数据集不变重新评测。单次 seed-v1 回归中 Recall 保持 100%，误报从 10 降到 0，Severity Match 从 25% 提升到 100%，总 Token 基本持平。这个结果只代表当前小型种子集，因此我保留了历史 baseline 和完整边界说明，没有把它夸大成生产准确率。
+
+这个案例体现的不只是“会写 Prompt”，而是完整的评测闭环：先建立基线、定位错误模式、做单变量修改、在同数据集回归、保留原始证据并准确说明局限。
+
+#### 准确边界与尚未完成
+
+- 当前只有 10 个手工案例，样本规模小且缺陷模式较清晰；
+- 每个 Prompt 版本只有一次完整运行，尚未测量模型随机性和重复运行方差；
+- `1.0` 是本次固定种子集结果，不代表真实仓库或生产环境准确率；
+- Dataset 参与了 Prompt 问题诊断，后续需要新增未参与调优的 holdout set，降低对 `seed-v1` 过拟合的风险；
+- 当前没有版本化价格快照，不能把 Token 换算为可复现成本；
+- 延迟结果没有控制网络与供应商负载，不能作为性能承诺。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-25，系统已经具备：
@@ -821,7 +938,8 @@ git diff --check: passed
 - 显式开启的 DeepSeek Live Eval；
 - 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline；
 - 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator；
-- 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2。
+- 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2；
+- 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline。
 
 ### 4.4 安全边界
 
@@ -921,6 +1039,8 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 > 建立包含 correctness、security、performance、maintainability、reliability 和 negative samples 的 10 案例评测种子集，实现同文件文本匹配、一对一 Finding 对齐及 Recall、Precision、F1、误报、类别、严重程度、Schema 和 Case Pass 指标；保存绑定 Git、Dataset、Prompt 和 Model 版本的 DeepSeek baseline，并实现离线 baseline 差异报告，为 Prompt 和 Agent 架构迭代提供回归基础。
 
+> 基于固定 `seed-v1` 对 DeepSeek Prompt 做单变量回归：Prompt v2 在一次完整运行中保持 100% Recall，将误报从 10 降至 0、Severity Match 从 25% 提升至 100%，总 Token 基本持平；同时保留版本化 baseline，并明确该结果不外推为生产准确率。
+
 暂时不要写入简历的内容：
 
 - “多 Agent 已实现”；
@@ -970,7 +1090,9 @@ git diff --check: passed
 - 数据库只读检查和唯一索引检查通过；
 - DeepSeek 单案例 Live Eval 试跑成功，usage 元数据正常；
 - DeepSeek 完整 10-case baseline 已保存，运行时工作区干净并绑定 Git commit `4274964`；
-- 完整评测 10/10 获得合法响应，无 Transport、Provider 或 Schema 错误。
+- Prompt v2 baseline 在干净工作区完成并绑定 Git commit `f111d2d`；
+- 两个版本的完整评测均为 10/10 合法响应，无 Transport、Provider 或 Schema 错误；
+- 相同 `seed-v1` 的真实对比中，Recall 保持 `1.0`，Precision 从 `0.4444` 提升到 `1.0`，误报从 10 降到 0，Severity Match 从 `0.25` 提升到 `1.0`。
 
 ---
 
@@ -978,10 +1100,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 Prompt v2；
-2. 使用 `--max-cases 1` 做一次低成本真实试跑，检查 Severity 和额外测试 Finding；
-3. 生成完整 `review-v2 + seed-v1` baseline，并与 `review-v1` 做离线比较；
-4. 审核 negative samples 的契约和上下文，修改时升级 Dataset Version；
+1. 提交 Prompt v2 baseline 和真实回归说明；
+2. 建立不参与 Prompt v2 调优的 holdout cases，作为泛化能力检查；
+3. 对关键 Prompt 版本做重复运行，记录均值、方差和稳定性；
+4. Dataset 内容变化时升级 Dataset Version，不覆盖 `seed-v1` 历史证据；
 5. 在获得更多历史结果后定义回归阈值，并使用显式价格快照计算 cost。
 
 ### 9.2 后续能力
