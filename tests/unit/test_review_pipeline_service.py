@@ -21,7 +21,10 @@ from app.repositories.review_publication_repository import ReviewPublicationRepo
 from app.repositories.review_report_repository import ReviewReportRepository
 from app.repositories.review_task_repository import ReviewTaskRepository
 from app.services.ai_review_service import AIReviewService
+from app.services.review_agent import GeneralReviewAgent
+from app.services.review_aggregator import PassthroughReviewAggregator
 from app.services.review_context_service import ReviewContextService
+from app.services.review_orchestrator import ReviewOrchestrator
 from app.services.review_pipeline_service import ReviewPipelineOutcome, ReviewPipelineService
 from app.services.review_publication_service import ReviewPublicationService
 from app.services.review_report_service import ReviewReportService
@@ -204,7 +207,10 @@ def _pipeline(
             review_files=ReviewFileRepository(session),
             github=github,
         ),
-        ai_reviews=AIReviewService(llm),
+        review_engine=ReviewOrchestrator(
+            agents=(GeneralReviewAgent(AIReviewService(llm)),),
+            aggregator=PassthroughReviewAggregator(),
+        ),
         reports=ReviewReportService(report_repository),
         publications=ReviewPublicationService(
             review_tasks=task_repository,

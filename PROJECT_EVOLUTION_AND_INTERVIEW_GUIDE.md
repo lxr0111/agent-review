@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-26
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到进入 Agent 化阶段前的设计基线。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Agent 架构接缝第一批完成。
 
 ## 1. 这份文档的用途
 
@@ -1477,6 +1477,91 @@ ReviewPipelineService
 
 ---
 
+### 3.19 Agent 架构接缝第一批
+
+#### 要解决的问题
+
+原来的 `ReviewPipelineService` 直接依赖 `AIReviewService`。这对于单模型流程足够简单，但如果直接在 Pipeline 中添加多个专业 Reviewer，任务状态、Agent 选择、结果聚合和发布流程会耦合在同一个服务中，后续难以独立测试和演进。
+
+本批目标不是增加模型能力，而是在不改变生产行为的前提下建立稳定接缝。
+
+#### 设计选择
+
+新增的调用关系是：
+
+```text
+ReviewPipelineService
+        → ReviewEngine (Protocol)
+            → ReviewOrchestrator
+                → GeneralReviewAgent (ReviewAgent)
+                    → existing AIReviewService
+                → PassthroughReviewAggregator
+                    → existing ReviewReport
+```
+
+具体边界：
+
+- `ReviewEngine` 是 Pipeline 唯一依赖的评审入口；
+- `ReviewAgent` 定义角色和 `review(context)` 契约；
+- `AgentRole` 当前只开放 `general`，没有提前声称已有专业 Agent；
+- `GeneralReviewAgent` 只适配现有 `AIReviewService`，不复制 Prompt 或输出映射逻辑；
+- `AgentReviewResult` 把角色和 Report 一起交给 Aggregator，为后续结果来源追踪预留边界；
+- `PassthroughReviewAggregator` 强制只接受一个结果，并原样返回同一个 `ReviewReport`；
+- `ReviewOrchestrator` 不捕获或转换 Provider 异常，Worker 仍按原异常类型决定是否重试。
+
+#### 改变与未改变的行为
+
+改变的是内部依赖方向：Pipeline 不再认识具体的 `AIReviewService`，Worker Factory 负责装配 Engine、Orchestrator、General Agent 和 Aggregator。
+
+以下行为保持不变：
+
+- 每次需要生成 Report 时仍只调用一次模型；
+- Prompt v2、Provider、结构化输出和业务校验不变；
+- Report/Finding 数据结构和数据库 Schema 不变；
+- Report 已存在时仍跳过 Context 和模型调用；
+- Publication、Head SHA 校验和 GitHub Review 发布不变；
+- Eval Runner 仍可直接使用 `AIReviewService`，没有被迫经过生产 Orchestrator。
+
+#### 自动化验证证据
+
+新增测试覆盖：
+
+- General Agent 把同一个 Context 委托给现有 AI 服务；
+- Orchestrator 符合 `ReviewEngine` Protocol；
+- Aggregator 收到 `general` 角色、原 Context 和原 Report；
+- Passthrough Aggregator 拒绝零个或多个结果，避免静默丢失输出；
+- 空 Agent 配置快速失败；
+- `LLMTransientError` 原样传播，确保 Worker 重试策略不失效；
+- Pipeline 完整流程仍只有一次 LLM Prompt，并继续通过恢复与发布回归测试。
+
+本批验证结果：
+
+```text
+Targeted Agent/Pipeline tests: 10 passed
+All tests: 222 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (90 source files)
+git diff --check: passed
+```
+
+#### 真实集成证据
+
+本批没有重新调用 DeepSeek，也没有向真实 GitHub PR 发布 Review。此前的真实链路证据仍然有效，但本批结论只建立在零行为变化的代码设计和自动化回归上。合并后如需生产级确认，应使用一个低风险测试 PR 验证最终装配路径。
+
+#### 面试怎么讲
+
+> 我先把生产 Pipeline 从具体 AI 服务解耦为 ReviewEngine，再用 GeneralReviewAgent 包装原有实现，并通过 Orchestrator 和单结果透传 Aggregator 保持完全相同的输出。这一批只改变依赖结构，模型仍调用一次，数据库和发布链路都不变。同时我专门验证了 Provider 异常不会在 Orchestrator 中被吞掉或改写，因此原来的 Celery 重试策略仍然成立。
+
+#### 当前限制
+
+- 现在仍是一个 General Agent，不是真正的多 Agent；
+- 没有 Planner、Agent Registry 或专业 Prompt；
+- Aggregator 只支持单结果透传，没有去重、冲突处理或标签校准；
+- 没有 Agent 级持久化、Usage、Latency、预算或断点恢复；
+- 尚无本批架构接缝的新增真实 DeepSeek/GitHub 联调证据。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-26，系统已经具备：
@@ -1525,7 +1610,15 @@ ReviewPipelineService
 - 保留 `holdout-v1` 原始证据，并通过严格 lineage 测试冻结只修复已知 Fixture 的 `holdout-v2`；
 - 使用 `--case-id` 做精确、低成本的 Mock 或 Live partial evaluation，并在 Provider 初始化前校验选择。
 
-### 4.4 安全边界
+### 4.4 Agent 架构基础
+
+- Pipeline 通过 `ReviewEngine` Protocol 依赖评审能力；
+- `ReviewAgent`、`AgentRole` 和 `AgentReviewResult` 提供角色化执行边界；
+- General Agent 复用现有 `AIReviewService`；
+- Orchestrator 负责编排，Passthrough Aggregator 保持单 Agent 输出不变；
+- 当前仍为一次模型调用，没有专业 Agent、动态路由或并发执行。
+
+### 4.5 安全边界
 
 - `.env`、`secrets/`、`*.pem` 被 Git 忽略；
 - Docker build context 排除凭据和本地缓存；
@@ -1543,12 +1636,13 @@ ReviewPipelineService
 
 ### 5.2 两分钟版本
 
-可以按四层展开：
+可以按五层展开：
 
 1. **可运行**：FastAPI、Celery、Redis、MySQL、GitHub App、DeepSeek 组成真实闭环。
 2. **可恢复**：Webhook、Task、Report 和 Publication 都有幂等策略；可恢复错误重试，永久错误快速失败。
 3. **可验证**：使用 Fault Stub 可控注入 Timeout、429、500、503、401 和非法输出，用日志和数据库共同验收。
 4. **可评估**：区分开发集和冻结 Holdout，计算 Recall、Precision、F1、误报、类别、严重程度、Schema 和 Case Pass，避免只凭一次 Demo 或调优过的数据判断模型质量。
+5. **可演进**：Pipeline 依赖 `ReviewEngine`，当前用单 General Agent 保持兼容，后续专业 Agent 可以先接 Eval 验证，再逐步进入生产链路。
 
 ### 5.3 五分钟技术深挖顺序
 
@@ -1609,6 +1703,10 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 当前 usage 首先服务于离线评测，现有业务 Report 不需要承担计费职责。先通过调用结果向 Eval 传递，避免为尚未稳定的成本模型做 migration；以后确认产品需求后再设计独立观测或计费模型。
 
+### 6.7 为什么先加 Agent 接缝而不是直接并行四个 Agent
+
+直接增加模型调用会同时改变质量、成本、延迟和恢复语义，出现问题时难以判断是架构迁移还是专业 Prompt 导致。第一批只改变依赖结构，并通过 General Agent 复用原逻辑，使一次改动只验证一个假设。等兼容边界稳定后，再分别引入 Planner、专业 Agent、聚合规则和 Agent 级恢复。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -1618,6 +1716,8 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 > 构建基于 FastAPI、Celery、Redis、MySQL、GitHub App 和 DeepSeek Responses API 的事件驱动 PR 自动评审系统，完成 Webhook → Diff → 结构化 AI Review → GitHub Review 的真实端到端联调。
 
 > 通过 Delivery ID、PR Head SHA、数据库唯一约束、Report 断点恢复及 Publication 远程标记对账实现业务幂等；实测 GitHub Webhook Redelivery 不会重复创建任务、调用模型或发布 Review。
+
+> 通过 `ReviewEngine`、`ReviewAgent`、Orchestrator 和透传 Aggregator 将生产 Pipeline 与具体 AI 服务解耦，在保持单次模型调用和既有 Report/Publication 行为不变的前提下，为后续专业 Agent 扩展建立可测试边界。
 
 > 搭建兼容 Responses API 的可控故障注入环境，验证 Timeout、429、500/503 的自动恢复、指数退避和 Retry-After 感知，以及 401 和非法结构化输出的快速失败；可恢复场景最终仅保留一份 Report、Publication 和 GitHub Review。
 
@@ -1654,14 +1754,16 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Matcher v2 与离线 Rescore | 210 | Matcher 版本兼容、运算符/词序匹配、SHA 绑定、不可变重评分和离线 CLI |
 | Holdout v2 Fixture 修复 | 212 | 独立 SHA、最小差异 lineage、原始证据保留和 corrected regression set Mock 自测 |
 | Eval 精确 Case 选择 | 217 | `--case-id`、互斥/未知 ID 门禁、partial baseline 限制和 Provider 初始化前失败 |
+| Agent 架构接缝 | 222 | ReviewEngine、General Agent、Orchestrator、透传聚合、异常传播和 Pipeline 零行为回归 |
 
 当前最近一次结果：
 
 ```text
 Eval tests: 51 passed
-All tests: 217 passed, 2 third-party deprecation warnings
+Targeted Agent/Pipeline tests: 10 passed
+All tests: 222 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (86 source files)
+mypy app evals: passed (90 source files)
 git diff --check: passed
 ```
 
@@ -1691,9 +1793,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 实施 Agent 架构接缝：`ReviewEngine`、`ReviewAgent`、General Agent、Orchestrator 和 passthrough Aggregator；
-2. 保持现有 Prompt、Provider、Report 和模型调用次数不变，先证明结构迁移零行为回归；
-3. 再实现专业 Reviewer、Deterministic Planner 和 Agent Registry，先接入 Eval 而不是生产 Worker；
+1. 设计第二批专业 Reviewer、Deterministic Planner 和 Agent Registry 的最小接口；
+2. 让专业 Agent 先接入 Eval 路径，不立即替换生产 Worker 的 General Agent；
+3. 为不同角色定义独立、版本化 Prompt，并保留单 Agent 对照组；
 4. 在生产多 Agent 前完成 Finding 去重、标签冲突规则和 Agent 级持久化恢复；
 5. 使用新的未见案例比较单 Agent 与多 Agent 的质量、Token 和延迟。
 

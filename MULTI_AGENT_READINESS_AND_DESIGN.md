@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：设计基线，尚未实现多 Agent 生产链路
+> 状态：第一批 Agent 架构接缝已完成，尚未实现多 Agent 生产链路
 > 更新时间：2026-09-26
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -375,6 +375,8 @@ Deterministic Planner
 
 目标：改变结构，不改变行为。
 
+实施状态：已于 2026-09-26 完成。生产链路当前通过单个 General Agent 运行，仍然只有一次模型调用。
+
 - 新增 `ReviewEngine` Protocol；
 - 新增 `ReviewAgent` Protocol 和 `AgentRole`；
 - 用 `GeneralReviewAgent` 包装现有 `AIReviewService`；
@@ -494,7 +496,7 @@ Deterministic Planner
 
 ## 16. 下一步
 
-下一批只实施“Agent 架构接缝”：
+第一批接缝已经实现：
 
 ```text
 ReviewPipelineService
@@ -505,3 +507,7 @@ ReviewPipelineService
 ```
 
 验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
+
+自动化验收结果为 222 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 90 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
+
+下一批进入“专业 Agent 和 Planner”的接口设计与 Eval-first 实现。专业 Agent 不应立即替换生产 General Agent；应先建立独立 Prompt 版本、确定性路由和单 Agent 对照实验，再根据真实模型评测决定是否继续进入 Validator、Aggregator 和生产级 Agent 持久化。

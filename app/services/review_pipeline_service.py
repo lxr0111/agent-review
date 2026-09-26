@@ -2,8 +2,8 @@ from enum import StrEnum
 from uuid import UUID
 
 from app.domain.review.enums import ReviewStatus
-from app.services.ai_review_service import AIReviewService
 from app.services.review_context_service import ReviewContextService
+from app.services.review_engine import ReviewEngine
 from app.services.review_publication_service import ReviewPublicationService
 from app.services.review_report_service import ReviewReportService
 from app.services.review_service import ReviewService
@@ -21,13 +21,13 @@ class ReviewPipelineService:
         *,
         reviews: ReviewService,
         contexts: ReviewContextService,
-        ai_reviews: AIReviewService,
+        review_engine: ReviewEngine,
         reports: ReviewReportService,
         publications: ReviewPublicationService,
     ) -> None:
         self._reviews = reviews
         self._contexts = contexts
-        self._ai_reviews = ai_reviews
+        self._review_engine = review_engine
         self._reports = reports
         self._publications = publications
 
@@ -43,7 +43,7 @@ class ReviewPipelineService:
         if report is None:
             context = self._contexts.build(task_id)
             self._reviews.start(task_id, stage="reviewing")
-            report = self._ai_reviews.review(context)
+            report = self._review_engine.review(context)
             self._reviews.start(task_id, stage="saving_report")
             self._reports.save(task_id, report)
 
