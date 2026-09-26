@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-26
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到专业 Agent 与确定性 Planner 第二批完成。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到专业 Agent 真实 DeepSeek partial trial 验收完成。
 
 ## 1. 这份文档的用途
 
@@ -1659,7 +1659,7 @@ python -m evals.runner --provider deepseek --live `
   --agent-role security --case-id security-sql-injection
 ```
 
-本批没有执行最后一条真实命令。Mock 结果仍只证明 evaluator plumbing 正常，不能作为专业 Agent 模型质量 baseline。
+实现阶段没有立即执行最后一条真实命令。随后在 Planner 误选修复提交后，按角色逐个执行了 6 次低成本真实 DeepSeek partial trial；Mock 结果仍只证明 evaluator plumbing 正常，真实 partial trial 也不能替代完整模型 baseline。
 
 `EvaluationRun` 和每个 `CaseEvaluation` 都新增 `agent_role`。历史 baseline 没有该字段时默认解释为 `general`，Comparator 描述中也会显示角色，避免把不同 Agent 的结果误认为同一 Prompt 实验。
 
@@ -1746,11 +1746,34 @@ usage: null
 
 #### 真实集成证据
 
-本批没有调用真实 DeepSeek，也没有替换生产 Worker 或发布 GitHub Review。因此不能声称专业 Agent 已提升 Recall、Precision、延迟或成本表现。
+Planner 修复提交 `24d1476` 后，使用 `deepseek-flash` 对四个正例和两个负例逐个运行专业 Agent。所有命令均显式包含 `--provider deepseek --live --agent-role ... --case-id ...`，没有发布 GitHub Review，也没有切换生产 Worker。
+
+| 角色 | 案例 | Prompt | 结果 | Tokens（输入/输出/总计） | Latency |
+|---|---|---|---|---:|---:|
+| Correctness | `correctness-empty-average` | `review-correctness-v1` | 1/1 命中，0 FP，Category/Severity 正确 | 1058/380/1438 | 2534 ms |
+| Security | `security-sql-injection` | `review-security-v1` | 1/1 命中，0 FP，Category/Severity 正确 | 1080/380/1460 | 2496 ms |
+| Performance | `performance-n-plus-one` | `review-performance-v1` | 1/1 命中，0 FP，Category/Severity 正确 | 1100/398/1498 | 2460 ms |
+| Maintainability | `maintainability-duplicated-rule` | `review-maintainability-v1` | 1/1 命中，0 FP，Category/Severity 正确 | 1126/384/1510 | 2247 ms |
+| Correctness | `negative-safe-average` | `review-correctness-v1` | 0 Finding，负例通过 | 1062/144/1206 | 1292 ms |
+| Security | `negative-parameterized-query` | `review-security-v1` | 0 Finding，负例通过 | 1148/279/1427 | 1836 ms |
+
+六次真实调用的汇总结果：
+
+- `successful_case`、Schema Validity 和 Case Pass 均为 6/6；
+- 四个正例 Finding 命中 4/4，False Positive 为 0，Category/Severity Match 均为 4/4；
+- 两个负例均输出 0 Finding，说明专业 Prompt 在这些代表案例上没有为了“完成职责”而强行报错；
+- 总 Usage 为 6574 Input、1965 Output、8539 Total Tokens；总墙钟时间约 12.87 秒；
+- 相同 6 个案例的 General v2 结果为 8205 Total Tokens、约 14.47 秒。专业 Agent 单角色运行多使用 334 Tokens，约增加 4.1%；一次性网络调用的延迟波动很大，不能据此声称专业 Agent 更快；
+- Security 正例正确识别 SQL 注入，但对 stacked/union exploitation 的措辞比 Patch 能直接证明的事实更强，后续 Validator 应约束“已证实影响”和“潜在影响”的表达边界；
+- Maintainability Agent 明确指出“当前没有运行时缺陷”，只报告重复业务规则带来的未来漂移风险，说明窄职责 Prompt 能区分当前故障与客观维护风险。
+
+这些运行使用 `seed-v1`、固定 Dataset SHA 和同一 Git commit，但工作区因与试跑无关的个人文档改动显示为 dirty，并且每次只执行一个案例。因此它们被记录为真实 partial trial，而不是可发布的 Model Baseline。现有 Seed 又已经参与开发，结果只能证明职责遵循和链路可用，不能证明对未见真实 PR 的泛化提升。
 
 #### 面试怎么讲
 
 > 第二批我没有直接让四个 Agent 一起跑，而是先把角色、独立 Prompt、Registry 和确定性 Planner 做成可单测组件。Planner 只根据 PR 和 Patch 的可审计信号选角，不再用一个 LLM 决定要调用哪些 LLM。专业 Agent 先通过 Eval Runner 单独运行，结果记录 agent role、prompt version 和 token usage；生产仍保持一个 General Agent。这样下一步做聚合时，可以区分路由、单 Agent 能力和 Aggregator 各自带来的变化。
+
+> 随后我用四个正例和两个负例做了 6 次真实 DeepSeek 单角色试跑，6/6 Case Pass，正例 4/4 命中且没有误报，负例均保持 0 Finding。与相同案例的 General v2 相比，总 Token 增加约 4.1%，但简单案例上的质量指标相同，所以我没有据此宣称专业 Agent 已提升质量，也没有把单次网络延迟当作性能结论。这批证据的价值是验证角色职责、Prompt 隔离、Usage 记录和负例克制性，为下一步 Validator 与 Aggregator 提供可审计起点。
 
 #### 当前限制
 
@@ -1758,7 +1781,7 @@ usage: null
 - 尚无 Validator、Finding 指纹、去重或冲突处理；
 - Planner 是关键词和重复行启发式，不是 AST/语义分析；
 - Patch 中的恶意文本可能触发更多角色，生产启用前必须配合 Agent 数量和 Token Budget；
-- 专业 Agent 尚无真实 DeepSeek 结果；
+- 专业 Agent 只有 6 个已见 Seed 案例的真实 partial trial，尚无完整 baseline、未见混合缺陷案例或稳定重复运行；
 - 生产仍是 General Agent，不能声称系统已经完成多 Agent 评审。
 
 ---
@@ -1998,6 +2021,8 @@ git diff --check: passed
 - 首次 `holdout-v1` baseline 在干净工作区完成并绑定 Git commit `a19c430`，10/10 获得合法响应；
 - Holdout 原始 Recall 为 `0.75`，人工审计确认 8/8 目标问题均被识别，并定位两个 Matcher 漏配和一个 Fixture 缺陷；
 - `holdout-v2` 修复后的路径 containment negative case 已完成真实 DeepSeek 精确试跑，Schema 合法、0 Findings、0 False Positives、Case Pass 通过，总计 2752 Tokens；该结果是 dirty-worktree partial trial，不是 Model Baseline。
+- 四个专业 Agent 已完成 6 次真实 DeepSeek 单案例 partial trial：四个正例全部命中、两个负例均为 0 Finding，6/6 Case Pass、0 False Positive、Schema 全部合法；总计 8539 Tokens。
+- 相同 6 个案例的 General v2 使用 8205 Tokens；专业单角色试跑多使用 334 Tokens（约 4.1%），质量指标在这些简单已见案例上相同。该比较不等于 Planner 实际多 Agent 总成本，也不构成泛化质量结论。
 
 ---
 
@@ -2005,11 +2030,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 Planner 误选修复；
-2. 选择每个专业角色的代表案例做显式、低成本 DeepSeek partial trial，先验证职责遵循和 Usage；
-3. 根据真实结果设计第三批 Validator、Finding Identity、去重和标签冲突规则；
-4. 在生产多 Agent 前完成 Agent 级持久化恢复、并发上限和 Token Budget；
-5. 使用新的未见案例比较 General 与专业 Agent 方案的质量、Token 和延迟。
+1. 设计第三批 Validator、Finding Identity、跨 Agent 去重和标签冲突规则；
+2. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合测试案例；
+3. 在生产多 Agent 前完成 Agent 级持久化恢复、并发上限和 Token Budget；
+4. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 方案的质量、Token 和延迟；
+5. 达到质量、成本与恢复门槛后，再小流量接入生产 GitHub Review 链路。
 
 ### 9.2 后续能力
 

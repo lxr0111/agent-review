@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第二批专业 Agent 与 Planner 已完成，尚未实现多 Agent 生产链路
+> 状态：第二批专业 Agent、Planner 与真实 partial trial 已完成，尚未实现多 Agent 生产链路
 > 更新时间：2026-09-26
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -406,9 +406,21 @@ Deterministic Planner
 - Eval 支持 `--agent-role` 隔离运行单个专业 Agent；
 - Eval 支持无模型调用的 `--plan-only` 路由审计；
 - 历史 baseline 缺少 `agent_role` 时默认解释为 General；
-- 尚未执行多 Agent 合并，也未运行真实专业 Agent baseline。
+- 尚未执行多 Agent 合并；已完成 6 次真实专业 Agent partial trial，但尚未运行完整专业 Agent baseline。
 
 完整 Seed 路由审计曾发现一个语义碰撞：数据去重案例中的 `duplicates` 误触发 Maintainability。规则已收紧为明确的业务规则/代码重复短语，并用负向断言保证该案例只选择 Correctness 和 Performance。修复后 10 个 Seed 案例的候选调用数从 17 降为 16。
+
+真实 DeepSeek 验收随后按单角色、单案例执行，避免在 Aggregator 尚未设计时混入多结果行为：
+
+| 试跑范围 | 结果 |
+|---|---|
+| 四个专业角色的代表正例 | 4/4 Finding 命中，0 False Positive，Category/Severity 全部匹配 |
+| Correctness 与 Security 负例 | 2/2 保持 0 Finding |
+| 稳定性 | 6/6 `successful_case`、Schema 合法、Case Pass |
+| Usage | 6574 Input + 1965 Output = 8539 Total Tokens |
+| 同案例 General v2 | 8205 Total Tokens；专业单角色增加 334 Tokens，约 4.1% |
+
+这些运行绑定同一代码提交和 Dataset SHA，但因与试跑无关的个人文档改动导致 `git_dirty=true`，而且使用的是已参与开发的 Seed 案例。因此它们只能作为真实 Provider、角色职责与 Usage 链路的 partial-trial 证据，不能登记为完整 baseline，也不能据此声称多 Agent 已提升泛化质量。一次性总延迟虽低于相同案例的历史 General 结果，也不能排除网络波动。
 
 ### 第三批：Validator 和 Aggregator
 
@@ -527,6 +539,8 @@ ReviewContext
 
 验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
 
-自动化验收结果为 246 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
+自动化验收结果为 246 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。
 
-下一步先提交 Planner 误选修复，再为四个专业角色各选择代表案例做显式 DeepSeek partial trial。确认职责遵循、误报和 Usage 后，再进入第三批 Validator 与 Aggregator；在 Finding Identity、去重和冲突规则完成前，不把多个 Agent 的输出接入生产发布链路。
+真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
+
+下一步进入第三批 Validator 与 Aggregator：先定义 Finding Identity、证据验证、去重和标签冲突规则，再用混合缺陷案例验证聚合结果。在这些规则完成前，不把多个 Agent 的输出接入生产发布链路。
