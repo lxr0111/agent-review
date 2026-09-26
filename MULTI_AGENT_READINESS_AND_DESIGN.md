@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第二批专业 Agent、Planner 与真实 partial trial 已完成，尚未实现多 Agent 生产链路
+> 状态：第三批 Validator 与确定性 Aggregator 第一阶段已完成，尚未实现多 Agent 生产链路
 > 更新时间：2026-09-26
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -424,12 +424,24 @@ Deterministic Planner
 
 ### 第三批：Validator 和 Aggregator
 
-- 文件路径与上下文范围验证；
-- Finding 指纹；
-- 跨 Agent exact duplicate 去重；
-- Category、Severity、Confidence 冲突规则；
-- 确定性 Summary 和 Risk Level；
-- 记录保留、合并和拒绝原因。
+实施状态：第一阶段已于 2026-09-26 完成，尚未接入 Eval 多 Agent 执行或生产 Worker。
+
+- 已完成文件路径、文本字段和 Confidence 的聚合边界验证；
+- 已完成基于规范化 File、Title 和 Explanation 的 SHA-256 Finding 指纹；
+- 已完成同文件文本相似匹配和保守 complete-link 分组；
+- 已完成跨 Agent duplicate 去重；
+- 已完成 Category、Severity 冲突审计；
+- 已完成职责匹配、Confidence、内容完整度和固定 tie-break 的规范 Finding 选择；
+- 已完成确定性 Summary、Finding 排序和 Risk Level；
+- 已记录 `kept`、`merged` 和冲突原因；
+- 尚未持久化审计结果，也没有行号范围参与身份判断。
+
+关键设计边界：
+
+- Category、Severity 不参与 Finding 匹配，避免标签冲突被匹配器掩盖；
+- Severity 不直接取最大值，避免单个 Agent 的严重程度膨胀污染最终风险；
+- 非法 Finding 采用 fail-closed，不静默丢弃；
+- 生产继续使用 `PassthroughReviewAggregator`，所以数据库和 GitHub 发布行为不变。
 
 ### 第四批：Agent 级持久化与恢复
 
@@ -539,8 +551,8 @@ ReviewContext
 
 验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
 
-自动化验收结果为 246 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。
+自动化验收结果为 265 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 96 个源码文件通过。新增验证覆盖未知文件、非法字段、重复 Finding、近似去重、相似但不同问题、标签冲突、空结果、重复角色和输入顺序无关性。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
-下一步进入第三批 Validator 与 Aggregator：先定义 Finding Identity、证据验证、去重和标签冲突规则，再用混合缺陷案例验证聚合结果。在这些规则完成前，不把多个 Agent 的输出接入生产发布链路。
+下一步把 Planner、Registry、多个专业 Agent 和 Deterministic Aggregator 接入仅供 Eval 使用的 Multi-Agent Runner，并增加混合缺陷、重复 Finding 和标签冲突案例。先记录聚合前后 Finding、Agent Contribution、Duplicate Rate、总 Usage 和延迟，再进入持久化与并发；当前仍不把多个 Agent 的输出接入生产发布链路。

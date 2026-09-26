@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-26
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到专业 Agent 真实 DeepSeek partial trial 验收完成。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到多 Agent Validator 与确定性 Aggregator 第一批完成。
 
 ## 1. 这份文档的用途
 
@@ -1786,6 +1786,125 @@ Planner 修复提交 `24d1476` 后，使用 `deepseek-flash` 对四个正例和�
 
 ---
 
+### 3.21 Finding Validator、Identity 与确定性 Aggregator 第一批
+
+#### 要解决的问题
+
+专业 Agent 已能独立运行，但原有 `PassthroughReviewAggregator` 明确只接受一个结果。如果直接把多个 Agent 的 Report 拼在一起，会产生三个风险：
+
+- General 与 Specialist 可能重复报告同一个根因；
+- 同一个问题可能使用不同 Category 或 Severity；
+- 模型输出虽然经过单 Agent 服务验证，进入新的聚合信任边界时仍缺少防御性检查和决策审计。
+
+本批先实现纯确定性的验证、Finding Identity 和聚合能力，不启用生产多 Agent，不增加模型调用，也不做数据库 Migration。
+
+#### 聚合边界验证
+
+新增 `ReviewFindingValidator`，对每个 `AgentReviewResult` 再次验证：
+
+- Finding 文件必须属于当前 `ReviewContext.reviewable_files`；
+- Title 长度、Explanation、Suggestion 和 Confidence 必须合法；
+- 同一个 Agent 不能返回完全重复的 Finding；
+- 验证后的 Finding 保留来源 `AgentRole`。
+
+非法结果会抛出 `ReviewFindingValidationError`，不会被静默丢弃后继续发布。这与现有单 Agent 的 fail-closed 行为保持一致。
+
+#### Finding Identity
+
+生产侧新增独立的 Finding Identity，未反向依赖 `evals.matcher`。第一版规则为：
+
+1. 必须引用同一个文件；
+2. 精确身份使用规范化后的 File、Title 和 Explanation 生成 SHA-256 指纹；
+3. 近似身份使用 Title 与组合文本的 token containment；
+4. Category、Severity、Confidence 和 Suggestion 不参与“是否同一问题”的判断。
+
+不使用 Category 和 Severity 做匹配，是为了让标签冲突在聚合后仍然可见。匹配阈值采取保守策略，并使用 complete-link 分组：新 Finding 必须与组内每一个成员都匹配，避免相似关系的传递链把两个不同问题错误合并。
+
+当前 `ReviewFinding` 没有行号，因此第一版不计算范围重叠，也不从自然语言猜测行号。
+
+#### 确定性聚合与冲突规则
+
+新增 `DeterministicReviewAggregator`，同时提供：
+
+```text
+aggregate(...) -> ReviewReport
+aggregate_with_metadata(...) -> ReviewAggregationResult
+```
+
+第二个接口额外返回：
+
+- `decisions`：每个 Finding 是 `kept` 还是 `merged`，以及原因；
+- `conflicts`：Category 或 Severity 的观察值、最终值和选择原因；
+- `source_roles`：参与聚合的 Agent 角色。
+
+同一问题的规范 Finding 按以下顺序选择：
+
+1. 专业角色与 Finding Category 是否一致；
+2. Confidence 是否更高；
+3. Explanation 与 Suggestion 是否提供更多内容；
+4. 固定 Role 顺序和规范化文本作为最终 tie-break。
+
+Severity 不采用简单的最大值，否则一个夸大的 General Finding 就可能把风险等级抬高。最终 Category、Severity、Confidence 和文本都来自被选中的规范 Finding；所有冲突进入审计元数据。最终 Finding 使用固定顺序排序，Summary 由代码生成，Risk Level 通过 `derive_review_risk()` 重新计算，因此 Agent 输入顺序不会改变最终 Report。
+
+#### 兼容性与生产边界
+
+`DeterministicReviewAggregator` 仍实现现有 `ReviewAggregator` Protocol，输出仍是已有 `ReviewReport`。数据库 Report、Finding、Publication 和 Markdown Formatter 都不需要修改。
+
+生产 `pipeline_factory.py` 本批没有变化，仍是：
+
+```text
+one GeneralReviewAgent
+    -> PassthroughReviewAggregator
+    -> one ReviewReport
+```
+
+因此本批没有改变生产模型调用数、GitHub Review 内容、重试策略或持久化行为。
+
+#### 自动化验证证据
+
+新增测试覆盖：
+
+- 合法 Finding 保留来源角色；
+- 未知文件、空文本、非法 Confidence 和单 Agent 重复 Finding 被拒绝；
+- 精确身份忽略 Category、Severity 与 Suggestion；
+- 同文件的重排文本可以匹配；
+- 同文件的两个不同 SQL 注入入口不会误合并；
+- 跨文件 Finding 不会合并；
+- General 与 Security 的重复 Finding 合并后优先采用 Security 的职责一致标签；
+- Category 与 Severity 冲突被记录；
+- 多个空 Report 可以生成无 Finding 的最终 Report；
+- 重复 Agent Role 和空结果被拒绝；
+- 调换 Agent 结果顺序后完整聚合结果保持一致；
+- 混合模型名称使用明确的 `multi-agent` 标识。
+
+验证结果：
+
+```text
+Targeted tests: 24 passed
+All tests: 265 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (96 source files)
+```
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、没有执行真实 GitHub Webhook，也没有发布 GitHub Review。现有 6 次专业 Agent partial trial 是上一批的真实证据，不能被当作本批 Aggregator 的真实集成证据。
+
+#### 面试怎么讲
+
+> 多 Agent 最容易出现的问题不是“能不能同时调用多个模型”，而是同一根因被重复发布以及标签冲突。我先在生产链路之外实现了确定性 Validator 和 Aggregator：匹配身份不使用 Category/Severity，保证冲突仍然可审计；规范 Finding 优先采用职责匹配的专业 Agent，而不是盲目选择最高 Severity；相同输入不受 Agent 返回顺序影响。这个阶段保持数据库和生产单 Agent 行为不变，用单元测试先固定合并语义。
+
+#### 当前限制
+
+- 文本身份是保守的词法启发式，还不是 AST、Embedding 或行范围匹配；
+- 当前审计元数据尚未持久化；
+- Aggregator 尚未接入 Eval 多 Agent Runner；
+- 尚未测试多个 Agent 对复杂、混合缺陷 PR 的真实输出；
+- 尚未实现部分 Agent 失败、并发、预算和 Agent 级恢复；
+- 生产仍使用 `PassthroughReviewAggregator`。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-26，系统已经具备：
@@ -1991,14 +2110,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Agent 架构接缝 | 222 | ReviewEngine、General Agent、Orchestrator、透传聚合、异常传播和 Pipeline 零行为回归 |
 | 专业 Agent 与 Planner | 245 | 四类专业 Prompt、Registry、确定性路由、Agent 元数据、Eval 隔离运行和历史 baseline 兼容 |
 | Planner 误选修复 | 246 | 区分重复数据与重复代码，增加负向路由断言并将 Seed 候选调用从 17 降到 16 |
+| Validator 与确定性 Aggregator | 265 | 聚合边界验证、Finding 身份、跨 Agent 去重、标签冲突审计和输入顺序无关性 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 56 passed
-All tests: 246 passed, 2 third-party deprecation warnings
+Targeted tests: 24 passed
+All tests: 265 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (94 source files)
+mypy app evals: passed (96 source files)
 git diff --check: passed
 ```
 
@@ -2030,11 +2150,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 设计第三批 Validator、Finding Identity、跨 Agent 去重和标签冲突规则；
-2. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合测试案例；
-3. 在生产多 Agent 前完成 Agent 级持久化恢复、并发上限和 Token Budget；
-4. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 方案的质量、Token 和延迟；
-5. 达到质量、成本与恢复门槛后，再小流量接入生产 GitHub Review 链路。
+1. 把 Planner、Registry、多个专业 Agent 和 Deterministic Aggregator 接入仅供 Eval 使用的 Multi-Agent Runner；
+2. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
+3. 记录聚合前后 Finding、Agent Contribution、Duplicate Rate、总 Usage 和墙钟时间；
+4. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 方案；
+5. 再进入 Agent 级持久化恢复、并发上限和 Token Budget，满足门槛后才考虑生产切换。
 
 ### 9.2 后续能力
 
