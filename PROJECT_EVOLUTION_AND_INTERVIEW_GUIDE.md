@@ -1696,7 +1696,7 @@ ReviewOrchestrator
 
 ```text
 Eval tests: 56 passed
-All tests: 245 passed, 2 third-party deprecation warnings
+All tests: 246 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (94 source files)
 git diff --check: passed
@@ -1721,6 +1721,28 @@ usage: null
 ```
 
 这是无网络的 evaluator self-test，不是模型质量证据。
+
+#### 完整路由审计与误选修复
+
+第二批提交后对完整 `seed-v1` 执行 `--plan-only`，首次结果中 `performance-quadratic-membership` 除了 Correctness 和 Performance，还被错误路由到 Maintainability。
+
+根因不是模型，而是 Planner 把孤立的 `duplicate`、`duplicated` 和 `copied` 当作代码重复信号。该案例中的 `find_duplicates` 和 `duplicates` 表示“查找重复数据”，不是“存在重复代码”，因此产生语义碰撞。如果直接进入真实多 Agent 执行，这个误选会多产生一次无必要的模型调用和 Token 成本。
+
+修复方式：
+
+- 删除孤立的 `duplicate`、`duplicated` 和 `copied` 关键词；
+- 只保留 `duplicate business rule`、`duplicated logic`、`same rule`、`copy-paste` 等明确短语；
+- 继续保留“同一可执行新增行至少出现三次”的结构化重复信号；
+- 新增针对 `performance-quadratic-membership` 的负向路由回归测试。
+
+修复后重新执行完整 `--plan-only`：
+
+- `performance-quadratic-membership` 只选择 Correctness 和 Performance；
+- `maintainability-duplicated-rule` 仍选择 Correctness 和 Maintainability；
+- 10 个 Seed 案例的候选 Agent 调用总数从 17 降为 16；
+- Planner 单元测试 12 项通过。
+
+这个过程说明 Planner 的评测不能只验证“应该选中的角色存在”，还要验证“不应该选中的角色不存在”，否则过度路由会在上线后直接放大成本。
 
 #### 真实集成证据
 
@@ -1945,12 +1967,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Eval 精确 Case 选择 | 217 | `--case-id`、互斥/未知 ID 门禁、partial baseline 限制和 Provider 初始化前失败 |
 | Agent 架构接缝 | 222 | ReviewEngine、General Agent、Orchestrator、透传聚合、异常传播和 Pipeline 零行为回归 |
 | 专业 Agent 与 Planner | 245 | 四类专业 Prompt、Registry、确定性路由、Agent 元数据、Eval 隔离运行和历史 baseline 兼容 |
+| Planner 误选修复 | 246 | 区分重复数据与重复代码，增加负向路由断言并将 Seed 候选调用从 17 降到 16 |
 
 当前最近一次结果：
 
 ```text
 Eval tests: 56 passed
-All tests: 245 passed, 2 third-party deprecation warnings
+All tests: 246 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (94 source files)
 git diff --check: passed
@@ -1982,7 +2005,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交第二批代码后，在干净提交上审计完整 `--plan-only` 路由结果；
+1. 提交 Planner 误选修复；
 2. 选择每个专业角色的代表案例做显式、低成本 DeepSeek partial trial，先验证职责遵循和 Usage；
 3. 根据真实结果设计第三批 Validator、Finding Identity、去重和标签冲突规则；
 4. 在生产多 Agent 前完成 Agent 级持久化恢复、并发上限和 Token Budget；

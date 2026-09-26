@@ -46,7 +46,17 @@ class DeterministicReviewPlanner:
             ("complexity concern", ("quadratic", "o(n", "nested loop")),
         ),
         AgentRole.MAINTAINABILITY: (
-            ("duplicated rule signal", ("duplicate", "duplicated", "copied", "same rule")),
+            (
+                "duplicated rule signal",
+                (
+                    "duplicate business rule",
+                    "duplicated business rule",
+                    "duplicated logic",
+                    "copy-paste",
+                    "copy paste",
+                    "same rule",
+                ),
+            ),
             ("canonicalization rule signal", ("normalize", "normalization", "canonical")),
             ("single source of truth signal", ("single source", "centralize", "business rule")),
         ),

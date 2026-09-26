@@ -408,6 +408,8 @@ Deterministic Planner
 - 历史 baseline 缺少 `agent_role` 时默认解释为 General；
 - 尚未执行多 Agent 合并，也未运行真实专业 Agent baseline。
 
+完整 Seed 路由审计曾发现一个语义碰撞：数据去重案例中的 `duplicates` 误触发 Maintainability。规则已收紧为明确的业务规则/代码重复短语，并用负向断言保证该案例只选择 Correctness 和 Performance。修复后 10 个 Seed 案例的候选调用数从 17 降为 16。
+
 ### 第三批：Validator 和 Aggregator
 
 - 文件路径与上下文范围验证；
@@ -525,6 +527,6 @@ ReviewContext
 
 验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
 
-自动化验收结果为 245 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
+自动化验收结果为 246 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
 
-下一步先在干净提交上审计完整 Planner 路由，并为四个专业角色各选择代表案例做显式 DeepSeek partial trial。确认职责遵循、误报和 Usage 后，再进入第三批 Validator 与 Aggregator；在 Finding Identity、去重和冲突规则完成前，不把多个 Agent 的输出接入生产发布链路。
+下一步先提交 Planner 误选修复，再为四个专业角色各选择代表案例做显式 DeepSeek partial trial。确认职责遵循、误报和 Usage 后，再进入第三批 Validator 与 Aggregator；在 Finding Identity、去重和冲突规则完成前，不把多个 Agent 的输出接入生产发布链路。

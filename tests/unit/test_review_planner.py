@@ -68,3 +68,11 @@ def test_planner_always_includes_correctness_and_reliability_baseline() -> None:
 
     assert plan.roles == (AgentRole.CORRECTNESS,)
     assert "reliability" in plan.agents[0].reasons[0]
+
+
+def test_planner_does_not_treat_duplicate_data_lookup_as_duplicated_code() -> None:
+    context = _case_context(SEED_PATH, "performance-quadratic-membership")
+
+    plan = DeterministicReviewPlanner().plan(context)
+
+    assert plan.roles == (AgentRole.CORRECTNESS, AgentRole.PERFORMANCE)
