@@ -94,6 +94,26 @@ Run one paid DeepSeek case as a guarded trial:
 python -m evals.runner --provider deepseek --live --max-cases 1
 ```
 
+Select one exact case for a deterministic low-cost trial:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_holdout_v2.json `
+  --provider deepseek `
+  --live `
+  --case-id holdout-negative-contained-upload-path
+```
+
+`--case-id` and `--max-cases` are mutually exclusive. Unknown IDs are rejected before Git state,
+application settings, or a real provider are loaded. An exact-case run is partial, reports
+`is_model_baseline=false`, and cannot be combined with `--save-baseline`.
+
+The corrected contained-upload negative case was exercised once with the real DeepSeek provider.
+It returned a schema-valid response with zero findings and zero false positives, using 1,127 input
+tokens and 1,625 output tokens. This is integration evidence for the fixture repair and exact-case
+selection only: it was a dirty-worktree partial trial, is not stored as a model baseline, and its
+single 7.88-second latency sample must not be treated as an SLO or aggregate performance result.
+
 Run all cases without writing a baseline:
 
 ```powershell

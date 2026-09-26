@@ -1311,15 +1311,110 @@ v2 是在阅读 v1 模型结果后产生的数据修正版。它可以作为未�
 
 - `holdout-v2` 是 corrected regression set，不是新的 blind holdout；
 - 当前只有 Mock self-test，尚无修复后案例的真实模型结果；
-- 如果需要低成本验证，可下一批为 Eval Runner 增加显式 `--case-id`，只运行目标案例；
+- Eval Runner 的显式 `--case-id` 已在下一节实现，可只运行目标案例做低成本验证；
 - 部分 live run 只能作为 trial，不能保存成完整 Model Baseline；
 - 进入 Phase 2 后仍需要新的未见数据验证多 Agent 是否真正泛化。
 
 ---
 
+### 3.17 `--case-id`：低成本、可控的精确 Eval 试跑
+
+#### 要解决的问题
+
+Eval Runner 原来只能运行完整 Dataset，或者用 `--max-cases N` 从头截取前 N 个案例。`holdout-v2` 修复的 negative fixture 位于数据集后部，如果只想验证这一条，就必须调用整个 Dataset，或者为了迁就位置而调整案例顺序。这两种做法分别增加真实模型费用或破坏 Dataset 稳定性。
+
+#### 设计选择
+
+Runner 新增显式 `--case-id`：
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_holdout_v2.json `
+  --provider deepseek `
+  --live `
+  --case-id holdout-negative-contained-upload-path
+```
+
+选择规则集中在同一个 `_select_cases` 边界中，Mock、Live 和 CLI 复用同一套语义：
+
+- Case ID 必须完全匹配 Dataset 中的一个案例；
+- 未知 ID 返回清晰错误；
+- `--case-id` 与 `--max-cases` 互斥；
+- 精确选例属于 partial run，`is_model_baseline=false`；
+- partial run 不能与 `--save-baseline` 组合；
+- `dataset_case_count` 保留完整数据集大小，`executed_case_count` 记录实际执行数量；
+- 默认 Mock、全量 Live 和原有 `--max-cases` 行为保持不变。
+
+未知 Case ID 的校验被放在收集 Git 状态和创建 Provider 之前。这样无效命令不会读取真实 Provider 配置，更不会触发网络调用或付费请求。
+
+#### 自动化验证证据
+
+- Mock Runner 能从 10-case `holdout-v2` 精确选择目标 negative case；
+- 精确运行的 `executed_case_count=1`，但 `dataset_case_count=10`；
+- 目标 Mock 结果 Case Pass 1.0、False Positives 0；
+- 未知 Case ID 会被拒绝；
+- 未知 live Case ID 在 Git State Collector 和 Provider Factory 调用前失败；
+- `--case-id` 与 `--max-cases` 组合会被拒绝；
+- `--case-id` 与 `--save-baseline` 组合会被拒绝；
+- Live Runner 的测试替身确认精确选例仍保留 Usage 与可复现元数据。
+
+本批最终测试数量和静态检查结果记录在第 8.1 节。
+
+#### 真实集成证据
+
+2026-09-25 已使用真实 DeepSeek 对修复后的 negative case 完成一次精确 partial trial：
+
+```text
+Provider: deepseek
+Model: deepseek-flash
+Prompt: review-v2
+Matcher: text-v2
+Dataset: holdout-v2
+Dataset SHA-256: ece7d8102bb1973afa1c290928e4051e9f497f5e99045974ab7e04b30e2b3303
+Case: holdout-negative-contained-upload-path
+Dataset cases: 10
+Executed cases: 1
+Git commit: 4e0c3f556809cf1ecfa95eeaa7fbaec9613ffe74
+Git dirty: true
+Outcome: successful_case
+Schema valid: true
+Expected findings: 0
+Actual findings: 0
+False positives: 0
+Case pass: true
+```
+
+DeepSeek 明确认可 `Path.resolve()` 后再用 `relative_to(UPLOAD_ROOT)` 验证目录边界的实现，并指出绝对路径、`..` 和 symlink escape 都会在读取前被解析和拒绝。补齐跨文件 Import 后，模型没有再次报告 v1 中的 `NameError`，也没有对正确的路径 containment 产生安全误报。
+
+本次调用的真实观测数据：
+
+```text
+Latency: 7876.82 ms
+Input tokens: 1127
+Output tokens: 1625
+Total tokens: 2752
+Cost: unavailable
+```
+
+`is_model_baseline=false`，符合 single-case partial trial 的定义。`git_dirty=true` 也被如实保留：执行时 `--case-id` 实现尚未提交，工作区还有其他未提交文件，因此不能把这次结果描述成绑定干净代码快照的正式 baseline。
+
+#### 面试怎么讲
+
+> 为了验证一个修复后的评测案例，我没有重新跑完整模型评测，而是给 Runner 增加精确 Case ID 选择。它和 max-cases 互斥，部分运行不能保存成 baseline，而且未知 ID 会在 Provider 初始化前失败。真实 DeepSeek 单案例试跑最终返回零 Finding，验证修复后的 negative fixture 不再触发缺失 Import，也没有对正确的路径 containment 产生误报。这样既控制了模型费用，也避免通过调整 Dataset 顺序来迁就工具。
+
+#### 准确边界与下一步
+
+- `--case-id` 只控制案例选择，不改变 Prompt、模型参数或 Matcher；
+- 单案例结果样本量为 1，不能外推整体 Recall、误报率或延迟分布；
+- corrected fixture 已被开发流程看到，真实试跑也不能称为盲测；
+- 本次 `7.88s` 延迟和 2752 Tokens 只描述一个请求，不能当成生产 SLO 或平均成本；
+- partial trial 结果不写入 `evals/baselines/`，也不用于跨 Dataset 的模型质量对比。
+
+---
+
 ## 4. 当前能力快照
 
-截至 2026-09-25，系统已经具备：
+截至 2026-09-26，系统已经具备：
 
 ### 4.1 主链路
 
@@ -1362,7 +1457,8 @@ v2 是在阅读 v1 模型结果后产生的数据修正版。它可以作为未�
 - 保存首次 Holdout 原始 baseline，并区分模型错误、Matcher 漏配和 Fixture 缺陷的人工审计；
 - 版本化的 `text-v1` / `text-v2` Matcher，以及绑定原 Baseline SHA-256 的纯离线 Rescore artifact；
 - 在不调用模型的条件下重新计算 Finding 对齐、Recall、误报、Category、Severity 和 Case Pass；
-- 保留 `holdout-v1` 原始证据，并通过严格 lineage 测试冻结只修复已知 Fixture 的 `holdout-v2`。
+- 保留 `holdout-v1` 原始证据，并通过严格 lineage 测试冻结只修复已知 Fixture 的 `holdout-v2`；
+- 使用 `--case-id` 做精确、低成本的 Mock 或 Live partial evaluation，并在 Provider 初始化前校验选择。
 
 ### 4.4 安全边界
 
@@ -1492,12 +1588,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Holdout v1 | 201 | 冻结 SHA、开发集隔离、类别/负例/多文件覆盖与 Mock 自测 |
 | Matcher v2 与离线 Rescore | 210 | Matcher 版本兼容、运算符/词序匹配、SHA 绑定、不可变重评分和离线 CLI |
 | Holdout v2 Fixture 修复 | 212 | 独立 SHA、最小差异 lineage、原始证据保留和 corrected regression set Mock 自测 |
+| Eval 精确 Case 选择 | 217 | `--case-id`、互斥/未知 ID 门禁、partial baseline 限制和 Provider 初始化前失败 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 46 passed
-All tests: 212 passed, 2 third-party deprecation warnings
+Eval tests: 51 passed
+All tests: 217 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (86 source files)
 git diff --check: passed
@@ -1520,7 +1617,8 @@ git diff --check: passed
 - 两个版本的完整评测均为 10/10 合法响应，无 Transport、Provider 或 Schema 错误；
 - 相同 `seed-v1` 的真实对比中，Recall 保持 `1.0`，Precision 从 `0.4444` 提升到 `1.0`，误报从 10 降到 0，Severity Match 从 `0.25` 提升到 `1.0`；
 - 首次 `holdout-v1` baseline 在干净工作区完成并绑定 Git commit `a19c430`，10/10 获得合法响应；
-- Holdout 原始 Recall 为 `0.75`，人工审计确认 8/8 目标问题均被识别，并定位两个 Matcher 漏配和一个 Fixture 缺陷。
+- Holdout 原始 Recall 为 `0.75`，人工审计确认 8/8 目标问题均被识别，并定位两个 Matcher 漏配和一个 Fixture 缺陷；
+- `holdout-v2` 修复后的路径 containment negative case 已完成真实 DeepSeek 精确试跑，Schema 合法、0 Findings、0 False Positives、Case Pass 通过，总计 2752 Tokens；该结果是 dirty-worktree partial trial，不是 Model Baseline。
 
 ---
 
@@ -1528,11 +1626,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 `holdout-v2`、lineage 测试和说明文档；
-2. 为 Eval Runner 增加显式 `--case-id`，支持低成本精确试跑；
-3. 可选地对修复后的 negative case 做一次 DeepSeek partial live trial，但不保存为 Model Baseline；
-4. 固化评测器与 Fixture 修正后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
-5. 后续增加新的未见案例、重复运行、回归阈值和版本化价格快照。
+1. 提交 `--case-id`、门禁测试、真实 single-case 证据和说明文档；
+2. 评测闭环完成后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
+3. 定义多 Agent 的职责边界、共享 Context、Finding 去重和冲突处理规则；
+4. 为多 Agent 改造准备新的未见案例，避免继续对现有 Holdout 调优；
+5. 后续增加重复运行、回归阈值和版本化价格快照。
 
 ### 9.2 后续能力
 

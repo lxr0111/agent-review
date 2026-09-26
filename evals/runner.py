@@ -41,12 +41,17 @@ class UnsafeEvaluationModeError(ValueError):
     pass
 
 
+class EvaluationSelectionError(ValueError):
+    pass
+
+
 def validate_run_mode(
     *,
     provider: str,
     live: bool,
     save_baseline: bool = False,
     max_cases: int | None = None,
+    case_id: str | None = None,
     baseline_output: Path | None = None,
     allow_dirty: bool = False,
 ) -> None:
@@ -62,8 +67,12 @@ def validate_run_mode(
         raise UnsafeEvaluationModeError(
             "--save-baseline requires explicit --provider deepseek --live"
         )
-    if save_baseline and max_cases is not None:
-        raise UnsafeEvaluationModeError("a partial --max-cases run cannot be saved as a baseline")
+    if max_cases is not None and case_id is not None:
+        raise UnsafeEvaluationModeError("--max-cases and --case-id are mutually exclusive")
+    if save_baseline and (max_cases is not None or case_id is not None):
+        raise UnsafeEvaluationModeError(
+            "a partial --max-cases or --case-id run cannot be saved as a baseline"
+        )
     if baseline_output is not None and not save_baseline:
         raise UnsafeEvaluationModeError("--baseline-output requires --save-baseline")
     if allow_dirty and not save_baseline:
@@ -74,9 +83,10 @@ def run_mock_evaluation(
     dataset: EvalDataset,
     *,
     max_cases: int | None = None,
+    case_id: str | None = None,
 ) -> EvaluationRun:
     case_results: list[CaseEvaluation] = []
-    selected_cases = _select_cases(dataset, max_cases=max_cases)
+    selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
     for case in selected_cases:
         provider = MockLLMProvider(_mock_output(case), model_name="eval-self-test-mock")
         case_results.append(evaluate_case(case, provider))
@@ -105,9 +115,10 @@ def run_live_evaluation(
     dataset_digest: str,
     git_state: GitState,
     max_cases: int | None = None,
+    case_id: str | None = None,
     executed_at: datetime | None = None,
 ) -> EvaluationRun:
-    selected_cases = _select_cases(dataset, max_cases=max_cases)
+    selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
     results = tuple(evaluate_case(case, provider) for case in selected_cases)
     return EvaluationRun(
         run_kind="live_evaluation",
@@ -115,7 +126,7 @@ def run_live_evaluation(
         model_name=provider.model_name,
         prompt_version=PROMPT_VERSION,
         matcher_version=CURRENT_MATCHER_VERSION,
-        is_model_baseline=max_cases is None,
+        is_model_baseline=max_cases is None and case_id is None,
         schema_version=dataset.schema_version,
         dataset_version=dataset.dataset_version,
         dataset_sha256=dataset_digest,
@@ -178,7 +189,15 @@ def _select_cases(
     dataset: EvalDataset,
     *,
     max_cases: int | None,
+    case_id: str | None,
 ) -> tuple[EvalCase, ...]:
+    if max_cases is not None and case_id is not None:
+        raise EvaluationSelectionError("max_cases and case_id are mutually exclusive")
+    if case_id is not None:
+        selected = tuple(case for case in dataset.cases if case.id == case_id)
+        if not selected:
+            raise EvaluationSelectionError(f"unknown case ID: {case_id}")
+        return selected
     if max_cases is None:
         return dataset.cases
     if max_cases < 1:
@@ -208,7 +227,9 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--provider", choices=("mock", "deepseek"), default="mock")
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--max-cases", type=_positive_integer)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--max-cases", type=_positive_integer)
+    selection.add_argument("--case-id")
     parser.add_argument("--save-baseline", action="store_true")
     parser.add_argument("--baseline-output", type=Path)
     parser.add_argument("--allow-dirty", action="store_true")
@@ -224,6 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             live=args.live,
             save_baseline=args.save_baseline,
             max_cases=args.max_cases,
+            case_id=args.case_id,
             baseline_output=args.baseline_output,
             allow_dirty=args.allow_dirty,
         )
@@ -232,8 +254,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     dataset_path = args.dataset.resolve()
     dataset = load_dataset(dataset_path)
+    try:
+        _select_cases(
+            dataset,
+            max_cases=args.max_cases,
+            case_id=args.case_id,
+        )
+    except EvaluationSelectionError as error:
+        parser.error(str(error))
+
     if args.provider == "mock":
-        result = run_mock_evaluation(dataset, max_cases=args.max_cases)
+        result = run_mock_evaluation(
+            dataset,
+            max_cases=args.max_cases,
+            case_id=args.case_id,
+        )
         print(result.model_dump_json(indent=2))
         return 0
 
@@ -252,13 +287,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset_digest=dataset_sha256(dataset_path),
                 git_state=git_state,
                 max_cases=args.max_cases,
+                case_id=args.case_id,
             )
         if args.save_baseline:
             baseline = build_model_baseline(result)
             baseline_path = args.baseline_output or default_baseline_path(result)
             save_model_baseline(baseline, baseline_path)
             print(f"baseline_saved={baseline_path}", file=sys.stderr)
-    except (BaselineSafetyError, LLMConfigurationError) as error:
+    except (BaselineSafetyError, EvaluationSelectionError, LLMConfigurationError) as error:
         parser.error(str(error))
 
     print(result.model_dump_json(indent=2))

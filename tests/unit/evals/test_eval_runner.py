@@ -10,6 +10,7 @@ from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from evals.baseline import GitState
 from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.runner import (
+    EvaluationSelectionError,
     UnsafeEvaluationModeError,
     evaluate_case,
     main,
@@ -20,6 +21,8 @@ from evals.runner import (
 from evals.schemas import load_dataset
 
 DATASET_PATH = Path("evals/cases/review_seed_v1.json")
+HOLDOUT_V2_PATH = Path("evals/cases/review_holdout_v2.json")
+CORRECTED_NEGATIVE_CASE_ID = "holdout-negative-contained-upload-path"
 
 
 class _UsageProvider:
@@ -100,6 +103,25 @@ def test_evaluate_case_exposes_provider_usage_without_computing_cost() -> None:
     assert result.usage.cost_usd is None
 
 
+def test_mock_runner_can_select_one_exact_case_by_id() -> None:
+    result = run_mock_evaluation(
+        load_dataset(HOLDOUT_V2_PATH),
+        case_id=CORRECTED_NEGATIVE_CASE_ID,
+    )
+
+    assert result.is_model_baseline is False
+    assert result.dataset_case_count == 10
+    assert result.executed_case_count == 1
+    assert [case.case_id for case in result.cases] == [CORRECTED_NEGATIVE_CASE_ID]
+    assert result.metrics.case_pass_rate == 1.0
+    assert result.metrics.false_positives == 0
+
+
+def test_mock_runner_rejects_an_unknown_case_id() -> None:
+    with pytest.raises(EvaluationSelectionError, match="unknown case ID"):
+        run_mock_evaluation(load_dataset(HOLDOUT_V2_PATH), case_id="missing-case")
+
+
 def test_non_mock_provider_requires_explicit_live_flag() -> None:
     with pytest.raises(UnsafeEvaluationModeError, match="explicit --live"):
         validate_run_mode(provider="deepseek", live=False)
@@ -120,8 +142,26 @@ def test_only_full_live_deepseek_run_can_request_baseline_save() -> None:
             max_cases=1,
         )
 
+    with pytest.raises(UnsafeEvaluationModeError, match="partial"):
+        validate_run_mode(
+            provider="deepseek",
+            live=True,
+            save_baseline=True,
+            case_id=CORRECTED_NEGATIVE_CASE_ID,
+        )
+
     with pytest.raises(UnsafeEvaluationModeError, match="requires explicit"):
         validate_run_mode(provider="mock", live=False, save_baseline=True)
+
+
+def test_case_id_and_max_cases_are_mutually_exclusive() -> None:
+    with pytest.raises(UnsafeEvaluationModeError, match="mutually exclusive"):
+        validate_run_mode(
+            provider="mock",
+            live=False,
+            max_cases=1,
+            case_id=CORRECTED_NEGATIVE_CASE_ID,
+        )
 
 
 def test_baseline_output_and_allow_dirty_require_save_flag() -> None:
@@ -166,7 +206,7 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
         provider,
         dataset_digest="a" * 64,
         git_state=GitState(commit="abc123", dirty=False),
-        max_cases=1,
+        case_id=case.id,
         executed_at=executed_at,
     )
 
@@ -182,6 +222,7 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
     assert result.git_dirty is False
     assert result.executed_at == executed_at
     assert result.metrics.usage.total_tokens == 100
+    assert result.cases[0].case_id == case.id
     assert result.cases[0].actual_findings[0].title == expected.description
 
 
@@ -196,6 +237,33 @@ def test_default_cli_ignores_real_provider_environment(monkeypatch, capsys) -> N
     assert payload["provider"] == "mock"
     assert payload["is_model_baseline"] is False
     assert payload["metrics"]["total_cases"] == 10
+
+
+def test_mock_cli_selects_exact_case_and_reports_unknown_case_cleanly(capsys) -> None:
+    exit_code = main(
+        [
+            "--dataset",
+            str(HOLDOUT_V2_PATH),
+            "--case-id",
+            CORRECTED_NEGATIVE_CASE_ID,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["executed_case_count"] == 1
+    assert payload["cases"][0]["case_id"] == CORRECTED_NEGATIVE_CASE_ID
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--dataset",
+                str(HOLDOUT_V2_PATH),
+                "--case-id",
+                "missing-case",
+            ]
+        )
+    assert "unknown case ID" in capsys.readouterr().err
 
 
 def test_dirty_baseline_is_rejected_before_provider_creation(monkeypatch) -> None:
@@ -218,6 +286,29 @@ def test_dirty_baseline_is_rejected_before_provider_creation(monkeypatch) -> Non
             ]
         )
 
+    provider_factory.assert_not_called()
+
+
+def test_unknown_live_case_is_rejected_before_provider_creation(monkeypatch) -> None:
+    provider_factory = Mock()
+    git_state_collector = Mock()
+    monkeypatch.setattr("evals.runner.collect_git_state", git_state_collector)
+    monkeypatch.setattr("evals.runner._create_deepseek_provider", provider_factory)
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--dataset",
+                str(HOLDOUT_V2_PATH),
+                "--provider",
+                "deepseek",
+                "--live",
+                "--case-id",
+                "missing-case",
+            ]
+        )
+
+    git_state_collector.assert_not_called()
     provider_factory.assert_not_called()
 
 
