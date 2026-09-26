@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.review_agent import AgentRole
 from evals.baseline import (
     BaselineSafetyError,
     build_model_baseline,
@@ -65,6 +66,8 @@ def test_historical_baseline_without_matcher_metadata_defaults_to_text_v1() -> N
     )
 
     assert baseline.evaluation.matcher_version == MatcherVersion.TEXT_V1
+    assert baseline.evaluation.agent_role == AgentRole.GENERAL
+    assert {case.agent_role for case in baseline.evaluation.cases} == {AgentRole.GENERAL}
 
 
 def test_default_baseline_path_is_stable_and_safe() -> None:

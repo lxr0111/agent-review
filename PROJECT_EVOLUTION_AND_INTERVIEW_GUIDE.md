@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-26
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Agent 架构接缝第一批完成。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到专业 Agent 与确定性 Planner 第二批完成。
 
 ## 1. 这份文档的用途
 
@@ -1552,13 +1552,192 @@ git diff --check: passed
 
 > 我先把生产 Pipeline 从具体 AI 服务解耦为 ReviewEngine，再用 GeneralReviewAgent 包装原有实现，并通过 Orchestrator 和单结果透传 Aggregator 保持完全相同的输出。这一批只改变依赖结构，模型仍调用一次，数据库和发布链路都不变。同时我专门验证了 Provider 异常不会在 Orchestrator 中被吞掉或改写，因此原来的 Celery 重试策略仍然成立。
 
-#### 当前限制
+#### 当时限制
 
 - 现在仍是一个 General Agent，不是真正的多 Agent；
 - 没有 Planner、Agent Registry 或专业 Prompt；
 - Aggregator 只支持单结果透传，没有去重、冲突处理或标签校准；
 - 没有 Agent 级持久化、Usage、Latency、预算或断点恢复；
 - 尚无本批架构接缝的新增真实 DeepSeek/GitHub 联调证据。
+
+---
+
+### 3.20 专业 Agent、Registry 与确定性 Planner 第二批
+
+#### 要解决的问题
+
+第一批只建立了 General Agent 接缝，还不能回答以下问题：
+
+- 不同专业 Reviewer 如何拥有独立且可追踪的 Prompt；
+- Planner 如何在不额外调用模型的情况下选择 Reviewer；
+- 如何先单独评测一个专业 Agent，而不立即改变生产 Worker；
+- 如何记录专业 Agent 的角色、Prompt Version 和 Token Usage；
+- 如何让历史 General baseline 在新增 Agent 元数据后继续可读。
+
+本批仍不解决多结果合并。Validator、去重和冲突处理属于下一批，如果现在直接拼接多个 Agent 输出，会把未设计的聚合行为混入质量实验。
+
+#### 专业 Agent 与 Prompt
+
+`AgentRole` 现在包含：
+
+```text
+general
+correctness
+security
+performance
+maintainability
+```
+
+四个专业角色使用独立 Prompt Version：
+
+| Agent | Prompt Version | 关注范围 |
+|---|---|---|
+| Correctness | `review-correctness-v1` | 行为契约、边界条件、控制流、错误处理、资源生命周期和可靠性 |
+| Security | `review-security-v1` | 信任边界、注入、鉴权、认证、敏感数据和路径处理 |
+| Performance | `review-performance-v1` | N+1、重复 I/O、异步阻塞、超线性算法和无界资源消耗 |
+| Maintainability | `review-maintainability-v1` | 重复业务规则、多个事实源、不可达代码和客观漂移风险 |
+
+当前没有单独的 Reliability Agent。第一版把 reliability 纳入 Correctness Agent，避免为了标签对称额外增加模型调用；后续真实评测如果显示职责过重，再决定是否拆分。
+
+专业 Prompt 复用 General Prompt 的安全边界、证据策略和 Severity Rubric，只追加窄化职责，不复制 PR/Diff 序列化逻辑。Prompt Version 由实际 Prompt Builder 单一来源产生，Agent 元数据不能单独伪造另一版本。
+
+#### Agent Result 与 Registry
+
+`AgentReviewResult` 现在携带：
+
+```text
+role
+report
+usage
+```
+
+General 与 Specialist Agent 都通过 `AIReviewService.review_with_metadata()` 获取 Report 和真实 Provider Usage。生产 Orchestrator 目前仍只使用 Report，但 Eval 可以记录 Input/Output/Total Tokens。
+
+`ReviewAgentRegistry` 负责：
+
+- 按 `AgentRole` 注册和获取 Agent；
+- 拒绝重复角色；
+- 拒绝空 Registry；
+- 对未注册角色快速失败；
+- 使用同一 Provider 构建 General 和四个专业 Agent。
+
+#### Deterministic Planner
+
+Planner 不调用 LLM，也不读取期望 Finding。它只查看 PR title/body、文件路径和 Patch，通过固定信号选择角色：
+
+- Correctness/可靠性是所有代码变更的基础 Reviewer；
+- SQL、命令执行、鉴权、上传路径和凭据相关信号选择 Security；
+- 数据访问、异步阻塞、重复全量集合操作和复杂度信号选择 Performance；
+- 重复/规范化/单一事实源语义，以及同一可执行新增行至少出现三次，选择 Maintainability。
+
+Planner 输出每个角色的可审计 `reasons`。选择某个 Agent 只表示“值得检查”，不代表 Planner 已判定存在缺陷。例如安全的参数化查询仍可能路由给 Security Agent，最终可以返回零 Finding。
+
+#### Eval-first 接入
+
+默认命令保持 General Agent，不改变历史使用方式：
+
+```powershell
+python -m evals.runner
+```
+
+只查看 Planner 选角，不创建 Provider、不访问网络：
+
+```powershell
+python -m evals.runner --plan-only --case-id security-sql-injection
+```
+
+使用 Mock 自测单个专业 Agent 的评测管线：
+
+```powershell
+python -m evals.runner --agent-role security --case-id security-sql-injection
+```
+
+真实专业 Agent 仍必须显式同时指定 Provider 和 `--live`：
+
+```powershell
+python -m evals.runner --provider deepseek --live `
+  --agent-role security --case-id security-sql-injection
+```
+
+本批没有执行最后一条真实命令。Mock 结果仍只证明 evaluator plumbing 正常，不能作为专业 Agent 模型质量 baseline。
+
+`EvaluationRun` 和每个 `CaseEvaluation` 都新增 `agent_role`。历史 baseline 没有该字段时默认解释为 `general`，Comparator 描述中也会显示角色，避免把不同 Agent 的结果误认为同一 Prompt 实验。
+
+#### 生产行为边界
+
+生产 `pipeline_factory.py` 没有切换到 Registry 或 Planner，仍然装配：
+
+```text
+ReviewOrchestrator
+    → one GeneralReviewAgent
+    → one model call
+    → PassthroughReviewAggregator
+```
+
+因此本批没有改变真实 GitHub Review 的内容、模型调用数、重试语义、数据库 Schema 或 Publication 行为。
+
+#### 自动化验证证据
+
+新增测试覆盖：
+
+- Registry 包含 General 和四个专业角色；
+- 重复、空和未知角色配置快速失败；
+- 四个专业 Agent 使用正确的职责文本和独立 Prompt Version；
+- Prompt Version 从真实 Builder 派生；
+- Agent Result 保留 Usage；
+- Planner 对 Seed/Holdout 的安全、性能、维护性案例选择预期角色；
+- 安全 negative samples 仍进入 Security 检查，但不会被 Planner 标记为缺陷；
+- 专业 Agent 的 Mock/Live 测试路径记录角色、Prompt 和 Usage；
+- `--plan-only` 不创建 Provider 或读取 Git 状态；
+- 历史 baseline 自动默认为 General Agent；
+- 现有生产 Pipeline、恢复、Baseline、Comparator 和 Rescore 全部回归通过。
+
+验证结果：
+
+```text
+Eval tests: 56 passed
+All tests: 245 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (94 source files)
+git diff --check: passed
+```
+
+#### 离线命令实测
+
+对 `security-sql-injection` 执行 `--plan-only`，Planner 输出：
+
+```text
+correctness: baseline correctness and reliability review
+security: database input boundary
+```
+
+随后使用 Mock 显式运行 Security Agent，结果记录：
+
+```text
+agent_role: security
+prompt_version: review-security-v1
+case_pass: true
+usage: null
+```
+
+这是无网络的 evaluator self-test，不是模型质量证据。
+
+#### 真实集成证据
+
+本批没有调用真实 DeepSeek，也没有替换生产 Worker 或发布 GitHub Review。因此不能声称专业 Agent 已提升 Recall、Precision、延迟或成本表现。
+
+#### 面试怎么讲
+
+> 第二批我没有直接让四个 Agent 一起跑，而是先把角色、独立 Prompt、Registry 和确定性 Planner 做成可单测组件。Planner 只根据 PR 和 Patch 的可审计信号选角，不再用一个 LLM 决定要调用哪些 LLM。专业 Agent 先通过 Eval Runner 单独运行，结果记录 agent role、prompt version 和 token usage；生产仍保持一个 General Agent。这样下一步做聚合时，可以区分路由、单 Agent 能力和 Aggregator 各自带来的变化。
+
+#### 当前限制
+
+- 尚未同时执行多个专业 Agent；
+- 尚无 Validator、Finding 指纹、去重或冲突处理；
+- Planner 是关键词和重复行启发式，不是 AST/语义分析；
+- Patch 中的恶意文本可能触发更多角色，生产启用前必须配合 Agent 数量和 Token Budget；
+- 专业 Agent 尚无真实 DeepSeek 结果；
+- 生产仍是 General Agent，不能声称系统已经完成多 Agent 评审。
 
 ---
 
@@ -1616,7 +1795,11 @@ git diff --check: passed
 - `ReviewAgent`、`AgentRole` 和 `AgentReviewResult` 提供角色化执行边界；
 - General Agent 复用现有 `AIReviewService`；
 - Orchestrator 负责编排，Passthrough Aggregator 保持单 Agent 输出不变；
-- 当前仍为一次模型调用，没有专业 Agent、动态路由或并发执行。
+- Registry 提供 General、Correctness/Reliability、Security、Performance 和 Maintainability Agent；
+- 四个专业 Agent 使用独立版本 Prompt，并通过 Eval Runner 单独评测；
+- Deterministic Planner 根据 PR、路径和 Patch 信号输出角色及原因；
+- `--plan-only` 默认离线且不创建模型 Provider；
+- 生产当前仍为一次 General 模型调用，没有多结果聚合、动态生产路由或并发执行。
 
 ### 4.5 安全边界
 
@@ -1707,6 +1890,10 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 直接增加模型调用会同时改变质量、成本、延迟和恢复语义，出现问题时难以判断是架构迁移还是专业 Prompt 导致。第一批只改变依赖结构，并通过 General Agent 复用原逻辑，使一次改动只验证一个假设。等兼容边界稳定后，再分别引入 Planner、专业 Agent、聚合规则和 Agent 级恢复。
 
+### 6.8 为什么 Planner 先用确定性规则
+
+如果 Planner 本身也调用 LLM，每次评审会多一次费用和失败点，而且路由变化难以解释。确定性 Planner 可以输出命中的具体原因，单元测试也能冻结路由行为。它的目标不是判断代码一定有缺陷，而是用低成本信号缩小专业 Reviewer 的候选范围；真实质量仍由后续模型评测决定。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -1718,6 +1905,8 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 > 通过 Delivery ID、PR Head SHA、数据库唯一约束、Report 断点恢复及 Publication 远程标记对账实现业务幂等；实测 GitHub Webhook Redelivery 不会重复创建任务、调用模型或发布 Review。
 
 > 通过 `ReviewEngine`、`ReviewAgent`、Orchestrator 和透传 Aggregator 将生产 Pipeline 与具体 AI 服务解耦，在保持单次模型调用和既有 Report/Publication 行为不变的前提下，为后续专业 Agent 扩展建立可测试边界。
+
+> 实现角色化 Agent Registry、四类版本化专业 Prompt 和可审计的确定性 Planner，并以 Eval-first 方式支持单专业 Agent 的隔离评测；生产链路继续使用单 General Agent，避免在去重、恢复和预算机制完成前扩大调用。
 
 > 搭建兼容 Responses API 的可控故障注入环境，验证 Timeout、429、500/503 的自动恢复、指数退避和 Retry-After 感知，以及 401 和非法结构化输出的快速失败；可恢复场景最终仅保留一份 Report、Publication 和 GitHub Review。
 
@@ -1755,15 +1944,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Holdout v2 Fixture 修复 | 212 | 独立 SHA、最小差异 lineage、原始证据保留和 corrected regression set Mock 自测 |
 | Eval 精确 Case 选择 | 217 | `--case-id`、互斥/未知 ID 门禁、partial baseline 限制和 Provider 初始化前失败 |
 | Agent 架构接缝 | 222 | ReviewEngine、General Agent、Orchestrator、透传聚合、异常传播和 Pipeline 零行为回归 |
+| 专业 Agent 与 Planner | 245 | 四类专业 Prompt、Registry、确定性路由、Agent 元数据、Eval 隔离运行和历史 baseline 兼容 |
 
 当前最近一次结果：
 
 ```text
-Eval tests: 51 passed
-Targeted Agent/Pipeline tests: 10 passed
-All tests: 222 passed, 2 third-party deprecation warnings
+Eval tests: 56 passed
+All tests: 245 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (90 source files)
+mypy app evals: passed (94 source files)
 git diff --check: passed
 ```
 
@@ -1793,11 +1982,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 设计第二批专业 Reviewer、Deterministic Planner 和 Agent Registry 的最小接口；
-2. 让专业 Agent 先接入 Eval 路径，不立即替换生产 Worker 的 General Agent；
-3. 为不同角色定义独立、版本化 Prompt，并保留单 Agent 对照组；
-4. 在生产多 Agent 前完成 Finding 去重、标签冲突规则和 Agent 级持久化恢复；
-5. 使用新的未见案例比较单 Agent 与多 Agent 的质量、Token 和延迟。
+1. 提交第二批代码后，在干净提交上审计完整 `--plan-only` 路由结果；
+2. 选择每个专业角色的代表案例做显式、低成本 DeepSeek partial trial，先验证职责遵循和 Usage；
+3. 根据真实结果设计第三批 Validator、Finding Identity、去重和标签冲突规则；
+4. 在生产多 Agent 前完成 Agent 级持久化恢复、并发上限和 Token Budget；
+5. 使用新的未见案例比较 General 与专业 Agent 方案的质量、Token 和延迟。
 
 ### 9.2 后续能力
 

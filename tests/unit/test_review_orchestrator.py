@@ -6,7 +6,8 @@ from app.domain.review.entities import ChangedFile, PullRequestSnapshot, ReviewC
 from app.domain.review.enums import FileChangeStatus
 from app.domain.review.report import ReviewReport, ReviewRiskLevel
 from app.providers.llm.exceptions import LLMTransientError
-from app.services.ai_review_service import AIReviewService
+from app.providers.llm.protocol import LLMTokenUsage
+from app.services.ai_review_service import AIReviewResult, AIReviewService
 from app.services.review_agent import (
     AgentReviewResult,
     AgentRole,
@@ -62,23 +63,29 @@ def _report() -> ReviewReport:
 def test_general_agent_delegates_to_existing_ai_review_service() -> None:
     context = _context()
     report = _report()
+    usage = LLMTokenUsage(input_tokens=20, output_tokens=5, total_tokens=25)
     review_service = Mock(spec=AIReviewService)
-    review_service.review.return_value = report
+    review_service.review_with_metadata.return_value = AIReviewResult(
+        report=report,
+        usage=usage,
+    )
     agent = GeneralReviewAgent(review_service)
 
     result = agent.review(context)
 
     assert isinstance(agent, ReviewAgent)
     assert agent.role == AgentRole.GENERAL
-    assert result is report
-    review_service.review.assert_called_once_with(context)
+    assert result.role == AgentRole.GENERAL
+    assert result.report is report
+    assert result.usage is usage
+    review_service.review_with_metadata.assert_called_once_with(context)
 
 
 def test_orchestrator_is_review_engine_and_preserves_report() -> None:
     context = _context()
     report = _report()
     review_service = Mock(spec=AIReviewService)
-    review_service.review.return_value = report
+    review_service.review_with_metadata.return_value = AIReviewResult(report=report, usage=None)
     aggregator = Mock(spec=ReviewAggregator)
     aggregator.aggregate.return_value = report
     orchestrator = ReviewOrchestrator(
@@ -90,7 +97,7 @@ def test_orchestrator_is_review_engine_and_preserves_report() -> None:
 
     assert isinstance(orchestrator, ReviewEngine)
     assert result is report
-    review_service.review.assert_called_once_with(context)
+    review_service.review_with_metadata.assert_called_once_with(context)
     aggregate_call = aggregator.aggregate.call_args
     assert aggregate_call.kwargs["context"] is context
     agent_results = aggregate_call.kwargs["results"]
@@ -118,7 +125,7 @@ def test_orchestrator_rejects_empty_agent_configuration() -> None:
 def test_orchestrator_preserves_agent_error_for_worker_retry_policy() -> None:
     error = LLMTransientError("provider temporarily unavailable")
     review_service = Mock(spec=AIReviewService)
-    review_service.review.side_effect = error
+    review_service.review_with_metadata.side_effect = error
     orchestrator = ReviewOrchestrator(
         agents=(GeneralReviewAgent(review_service),),
         aggregator=PassthroughReviewAggregator(),

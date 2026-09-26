@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.domain.review.report import FindingCategory, FindingSeverity
+from app.services.review_agent import AgentRole
 from evals.baseline import ModelBaseline
 from evals.metrics import CaseEvaluation, EvaluatedFinding, EvaluationRun
 
@@ -36,6 +37,7 @@ class BaselineDescriptor(BaseModel):
     provider: str
     model_name: str | None
     prompt_version: str
+    agent_role: AgentRole
     dataset_version: str
     dataset_sha256: str
     git_commit: str
@@ -184,6 +186,7 @@ def _descriptor(evaluation: EvaluationRun) -> BaselineDescriptor:
         provider=evaluation.provider,
         model_name=evaluation.model_name,
         prompt_version=evaluation.prompt_version,
+        agent_role=evaluation.agent_role,
         dataset_version=evaluation.dataset_version,
         dataset_sha256=evaluation.dataset_sha256,
         git_commit=evaluation.git_commit,

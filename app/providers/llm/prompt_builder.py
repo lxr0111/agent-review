@@ -55,6 +55,10 @@ explanation, suggestion, file_path, severity, category, and confidence."""
 
 
 class ReviewPromptBuilder:
+    @property
+    def prompt_version(self) -> str:
+        return PROMPT_VERSION
+
     def build(self, context: ReviewContext) -> ReviewPrompt:
         pull_request = context.pull_request
         body = pull_request.body
@@ -92,5 +96,5 @@ class ReviewPromptBuilder:
         return ReviewPrompt(
             system=SYSTEM_PROMPT,
             user=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            version=PROMPT_VERSION,
+            version=self.prompt_version,
         )

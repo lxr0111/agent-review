@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第一批 Agent 架构接缝已完成，尚未实现多 Agent 生产链路
+> 状态：第二批专业 Agent 与 Planner 已完成，尚未实现多 Agent 生产链路
 > 更新时间：2026-09-26
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -390,12 +390,23 @@ Deterministic Planner
 
 ### 第二批：专业 Agent 和 Planner
 
+实施状态：已于 2026-09-26 完成，当前仅接入 Eval，生产仍使用单 General Agent。
+
 - Correctness、Security、Performance、Maintainability Agent；
 - 每个 Agent 使用独立 Prompt Version；
 - Agent Registry；
 - Deterministic Planner；
 - Planner 根据 Patch、路径和文件类型选择 Agent；
 - 先只接 Eval，不替换生产 Pipeline。
+
+实际实现补充：
+
+- Correctness Agent 同时承担第一版 reliability 审查；
+- `AgentReviewResult` 保留 role、report 和 usage；
+- Eval 支持 `--agent-role` 隔离运行单个专业 Agent；
+- Eval 支持无模型调用的 `--plan-only` 路由审计；
+- 历史 baseline 缺少 `agent_role` 时默认解释为 General；
+- 尚未执行多 Agent 合并，也未运行真实专业 Agent baseline。
 
 ### 第三批：Validator 和 Aggregator
 
@@ -496,7 +507,7 @@ Deterministic Planner
 
 ## 16. 下一步
 
-第一批接缝已经实现：
+前两批已经实现：
 
 ```text
 ReviewPipelineService
@@ -504,10 +515,16 @@ ReviewPipelineService
             → ReviewOrchestrator
                 → GeneralReviewAgent
                     → existing AIReviewService
+
+Eval only:
+ReviewContext
+        → DeterministicReviewPlanner
+        → ReviewAgentRegistry
+        → one explicitly selected SpecialistReviewAgent
 ```
 
 验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
 
-自动化验收结果为 222 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 90 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
+自动化验收结果为 245 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 94 个源码文件通过。本批没有新增真实 DeepSeek/GitHub 联调，不能把自动化回归描述为新的真实集成证据。
 
-下一批进入“专业 Agent 和 Planner”的接口设计与 Eval-first 实现。专业 Agent 不应立即替换生产 General Agent；应先建立独立 Prompt 版本、确定性路由和单 Agent 对照实验，再根据真实模型评测决定是否继续进入 Validator、Aggregator 和生产级 Agent 持久化。
+下一步先在干净提交上审计完整 Planner 路由，并为四个专业角色各选择代表案例做显式 DeepSeek partial trial。确认职责遵循、误报和 Usage 后，再进入第三批 Validator 与 Aggregator；在 Finding Identity、去重和冲突规则完成前，不把多个 Agent 的输出接入生产发布链路。

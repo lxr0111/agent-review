@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.domain.review.report import FindingSeverity
+from app.services.review_agent import AgentRole
 from evals.baseline import BaselineSafetyError, ModelBaseline, load_model_baseline
 from evals.compare import main
 from evals.comparison import (
@@ -62,6 +63,7 @@ def test_checked_in_deepseek_baseline_loads_with_derived_quality_metrics() -> No
     comparison = compare_model_baselines(baseline, baseline)
 
     assert comparison.baseline.prompt_version == "review-v1"
+    assert comparison.baseline.agent_role == AgentRole.GENERAL
     assert comparison.metrics["precision"].baseline == pytest.approx(8 / 18)
     assert comparison.metrics["f1"].baseline == pytest.approx(8 / 13)
     assert comparison.metrics["negative_sample_case_pass_rate"].baseline == 0.0

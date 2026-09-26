@@ -27,6 +27,10 @@ class AIReviewService:
         self._provider = provider
         self._prompt_builder = prompt_builder or ReviewPromptBuilder()
 
+    @property
+    def prompt_version(self) -> str:
+        return self._prompt_builder.prompt_version
+
     def review(self, context: ReviewContext) -> ReviewReport:
         return self.review_with_metadata(context).report
 

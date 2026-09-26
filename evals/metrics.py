@@ -14,6 +14,7 @@ from app.domain.review.report import (
 )
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
 from app.providers.llm.protocol import LLMTokenUsage
+from app.services.review_agent import AgentRole
 from evals.matcher import (
     CURRENT_MATCHER_VERSION,
     LEGACY_MATCHER_VERSION,
@@ -82,6 +83,7 @@ class CaseEvaluation(BaseModel):
     summary: str | None = None
     model_name: str | None = None
     prompt_version: str | None = None
+    agent_role: AgentRole = AgentRole.GENERAL
     actual_findings: tuple[EvaluatedFinding, ...] = ()
     matches: tuple[FindingMatchDetail, ...] = ()
     error_type: str | None = None
@@ -120,6 +122,7 @@ class EvaluationRun(BaseModel):
     provider: str
     model_name: str | None
     prompt_version: str
+    agent_role: AgentRole = AgentRole.GENERAL
     matcher_version: MatcherVersion = LEGACY_MATCHER_VERSION
     is_model_baseline: bool
     schema_version: str
@@ -141,6 +144,7 @@ def successful_case_evaluation(
     latency_ms: float,
     usage: LLMTokenUsage | None = None,
     matcher_version: MatcherVersion = CURRENT_MATCHER_VERSION,
+    agent_role: AgentRole = AgentRole.GENERAL,
 ) -> CaseEvaluation:
     result, details, category_matches, severity_matches = _score_findings(
         case,
@@ -169,6 +173,7 @@ def successful_case_evaluation(
         summary=report.summary,
         model_name=report.model_name,
         prompt_version=report.prompt_version,
+        agent_role=agent_role,
         actual_findings=tuple(
             EvaluatedFinding(
                 title=finding.title,
@@ -274,6 +279,7 @@ def error_case_evaluation(
     error: Exception,
     *,
     latency_ms: float,
+    agent_role: AgentRole = AgentRole.GENERAL,
 ) -> CaseEvaluation:
     outcome = classify_error(error)
     return CaseEvaluation(
@@ -290,6 +296,7 @@ def error_case_evaluation(
         severity_match_count=0,
         case_pass=False,
         error_type=type(error).__name__,
+        agent_role=agent_role,
         usage=EvalUsage(),
     )
 

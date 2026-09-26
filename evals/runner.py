@@ -8,10 +8,11 @@ from typing import TYPE_CHECKING
 
 from app.providers.llm.exceptions import LLMConfigurationError
 from app.providers.llm.mock import MockLLMProvider
-from app.providers.llm.prompt_builder import PROMPT_VERSION
 from app.providers.llm.protocol import LLMProvider
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
-from app.services.ai_review_service import AIReviewService
+from app.services.review_agent import AgentRole, ReviewAgent
+from app.services.review_agent_registry import create_default_agent_registry
+from app.services.specialist_prompt_builder import agent_prompt_version
 from evals.baseline import (
     BaselineSafetyError,
     GitState,
@@ -29,6 +30,7 @@ from evals.metrics import (
     error_case_evaluation,
     successful_case_evaluation,
 )
+from evals.planning import AgentPlanningRun, build_agent_planning_run
 from evals.schemas import EvalCase, EvalDataset, load_dataset
 
 if TYPE_CHECKING:
@@ -54,6 +56,8 @@ def validate_run_mode(
     case_id: str | None = None,
     baseline_output: Path | None = None,
     allow_dirty: bool = False,
+    agent_role: AgentRole = AgentRole.GENERAL,
+    plan_only: bool = False,
 ) -> None:
     if provider == "mock" and live:
         raise UnsafeEvaluationModeError("--live cannot be used with the mock provider")
@@ -77,6 +81,18 @@ def validate_run_mode(
         raise UnsafeEvaluationModeError("--baseline-output requires --save-baseline")
     if allow_dirty and not save_baseline:
         raise UnsafeEvaluationModeError("--allow-dirty is only meaningful with --save-baseline")
+    if plan_only and (provider != "mock" or live or save_baseline):
+        raise UnsafeEvaluationModeError(
+            "--plan-only cannot use a live provider or save a model baseline"
+        )
+    if plan_only and (baseline_output is not None or allow_dirty):
+        raise UnsafeEvaluationModeError(
+            "--plan-only cannot use baseline output or dirty-worktree options"
+        )
+    if plan_only and agent_role != AgentRole.GENERAL:
+        raise UnsafeEvaluationModeError(
+            "--plan-only selects roles itself and cannot be combined with --agent-role"
+        )
 
 
 def run_mock_evaluation(
@@ -84,19 +100,22 @@ def run_mock_evaluation(
     *,
     max_cases: int | None = None,
     case_id: str | None = None,
+    agent_role: AgentRole = AgentRole.GENERAL,
 ) -> EvaluationRun:
     case_results: list[CaseEvaluation] = []
     selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
     for case in selected_cases:
         provider = MockLLMProvider(_mock_output(case), model_name="eval-self-test-mock")
-        case_results.append(evaluate_case(case, provider))
+        agent = create_default_agent_registry(provider).get(agent_role)
+        case_results.append(evaluate_agent_case(case, agent))
 
     results = tuple(case_results)
     return EvaluationRun(
         run_kind="evaluator_self_test",
         provider="mock",
         model_name="eval-self-test-mock",
-        prompt_version=PROMPT_VERSION,
+        prompt_version=agent_prompt_version(agent_role),
+        agent_role=agent_role,
         matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=False,
         schema_version=dataset.schema_version,
@@ -117,14 +136,17 @@ def run_live_evaluation(
     max_cases: int | None = None,
     case_id: str | None = None,
     executed_at: datetime | None = None,
+    agent_role: AgentRole = AgentRole.GENERAL,
 ) -> EvaluationRun:
     selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
-    results = tuple(evaluate_case(case, provider) for case in selected_cases)
+    agent = create_default_agent_registry(provider).get(agent_role)
+    results = tuple(evaluate_agent_case(case, agent) for case in selected_cases)
     return EvaluationRun(
         run_kind="live_evaluation",
         provider="deepseek",
         model_name=provider.model_name,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=agent.prompt_version,
+        agent_role=agent_role,
         matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=max_cases is None and case_id is None,
         schema_version=dataset.schema_version,
@@ -141,10 +163,14 @@ def run_live_evaluation(
 
 
 def evaluate_case(case: EvalCase, provider: LLMProvider) -> CaseEvaluation:
-    service = AIReviewService(provider)
+    agent = create_default_agent_registry(provider).get(AgentRole.GENERAL)
+    return evaluate_agent_case(case, agent)
+
+
+def evaluate_agent_case(case: EvalCase, agent: ReviewAgent) -> CaseEvaluation:
     started = perf_counter()
     try:
-        review_result = service.review_with_metadata(case.to_review_context())
+        review_result = agent.review(case.to_review_context())
     # The runner boundary must turn every per-case failure into an evaluation outcome
     # so one malformed response cannot abort the remaining seed cases.
     except Exception as error:  # noqa: BLE001
@@ -152,13 +178,25 @@ def evaluate_case(case: EvalCase, provider: LLMProvider) -> CaseEvaluation:
             case,
             error,
             latency_ms=(perf_counter() - started) * 1_000,
+            agent_role=agent.role,
         )
     return successful_case_evaluation(
         case,
         review_result.report,
         latency_ms=(perf_counter() - started) * 1_000,
         usage=review_result.usage,
+        agent_role=agent.role,
     )
+
+
+def run_agent_planning(
+    dataset: EvalDataset,
+    *,
+    max_cases: int | None = None,
+    case_id: str | None = None,
+) -> AgentPlanningRun:
+    selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
+    return build_agent_planning_run(dataset, selected_cases)
 
 
 def _mock_output(case: EvalCase) -> LLMReviewOutput:
@@ -227,6 +265,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--provider", choices=("mock", "deepseek"), default="mock")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument(
+        "--agent-role",
+        choices=tuple(role.value for role in AgentRole),
+        default=AgentRole.GENERAL.value,
+    )
+    parser.add_argument("--plan-only", action="store_true")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--max-cases", type=_positive_integer)
     selection.add_argument("--case-id")
@@ -239,6 +283,7 @@ def _argument_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _argument_parser()
     args = parser.parse_args(argv)
+    agent_role = AgentRole(args.agent_role)
     try:
         validate_run_mode(
             provider=args.provider,
@@ -248,6 +293,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             case_id=args.case_id,
             baseline_output=args.baseline_output,
             allow_dirty=args.allow_dirty,
+            agent_role=agent_role,
+            plan_only=args.plan_only,
         )
     except UnsafeEvaluationModeError as error:
         parser.error(str(error))
@@ -263,11 +310,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     except EvaluationSelectionError as error:
         parser.error(str(error))
 
+    if args.plan_only:
+        plan = run_agent_planning(
+            dataset,
+            max_cases=args.max_cases,
+            case_id=args.case_id,
+        )
+        print(plan.model_dump_json(indent=2))
+        return 0
+
     if args.provider == "mock":
         result = run_mock_evaluation(
             dataset,
             max_cases=args.max_cases,
             case_id=args.case_id,
+            agent_role=agent_role,
         )
         print(result.model_dump_json(indent=2))
         return 0
@@ -288,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 git_state=git_state,
                 max_cases=args.max_cases,
                 case_id=args.case_id,
+                agent_role=agent_role,
             )
         if args.save_baseline:
             baseline = build_model_baseline(result)

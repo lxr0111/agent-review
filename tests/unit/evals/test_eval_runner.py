@@ -7,6 +7,7 @@ import pytest
 
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
+from app.services.review_agent import AgentRole
 from evals.baseline import GitState
 from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.runner import (
@@ -14,6 +15,7 @@ from evals.runner import (
     UnsafeEvaluationModeError,
     evaluate_case,
     main,
+    run_agent_planning,
     run_live_evaluation,
     run_mock_evaluation,
     validate_run_mode,
@@ -31,9 +33,10 @@ class _UsageProvider:
     def __init__(self, output: LLMReviewOutput) -> None:
         self._output = output
         self.closed = False
+        self.prompts: list[ReviewPrompt] = []
 
     def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
-        del prompt
+        self.prompts.append(prompt)
         return LLMReviewResult(
             output=self._output,
             usage=LLMTokenUsage(input_tokens=70, output_tokens=30, total_tokens=100),
@@ -52,6 +55,7 @@ def test_mock_runner_is_a_perfect_evaluator_self_test_not_a_baseline() -> None:
 
     assert result.run_kind == "evaluator_self_test"
     assert result.provider == "mock"
+    assert result.agent_role == AgentRole.GENERAL
     assert result.is_model_baseline is False
     assert result.matcher_version == CURRENT_MATCHER_VERSION
     assert result.metrics.total_cases == 10
@@ -69,6 +73,22 @@ def test_mock_runner_is_a_perfect_evaluator_self_test_not_a_baseline() -> None:
     assert result.metrics.usage.total_tokens is None
     assert result.metrics.usage.cost_usd is None
     assert {case.outcome.value for case in result.cases} == {"successful_case"}
+    assert {case.agent_role for case in result.cases} == {AgentRole.GENERAL}
+
+
+def test_mock_runner_can_self_test_one_explicit_specialist() -> None:
+    result = run_mock_evaluation(
+        load_dataset(DATASET_PATH),
+        case_id="security-sql-injection",
+        agent_role=AgentRole.SECURITY,
+    )
+
+    assert result.agent_role == AgentRole.SECURITY
+    assert result.prompt_version == "review-security-v1"
+    assert result.executed_case_count == 1
+    assert result.cases[0].agent_role == AgentRole.SECURITY
+    assert result.cases[0].prompt_version == "review-security-v1"
+    assert result.metrics.case_pass_rate == 1.0
 
 
 def test_evaluate_case_exposes_provider_usage_without_computing_cost() -> None:
@@ -164,6 +184,19 @@ def test_case_id_and_max_cases_are_mutually_exclusive() -> None:
         )
 
 
+def test_plan_only_rejects_live_baseline_and_explicit_agent_selection() -> None:
+    with pytest.raises(UnsafeEvaluationModeError, match="live provider"):
+        validate_run_mode(provider="deepseek", live=True, plan_only=True)
+
+    with pytest.raises(UnsafeEvaluationModeError, match="selects roles itself"):
+        validate_run_mode(
+            provider="mock",
+            live=False,
+            plan_only=True,
+            agent_role=AgentRole.SECURITY,
+        )
+
+
 def test_baseline_output_and_allow_dirty_require_save_flag() -> None:
     with pytest.raises(UnsafeEvaluationModeError, match="baseline-output"):
         validate_run_mode(
@@ -212,6 +245,7 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
 
     assert result.run_kind == "live_evaluation"
     assert result.provider == "deepseek"
+    assert result.agent_role == AgentRole.GENERAL
     assert result.model_name == "usage-test-model"
     assert result.prompt_version == "review-v2"
     assert result.is_model_baseline is False
@@ -224,6 +258,64 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
     assert result.metrics.usage.total_tokens == 100
     assert result.cases[0].case_id == case.id
     assert result.cases[0].actual_findings[0].title == expected.description
+
+
+def test_live_runner_records_specialist_prompt_role_and_usage() -> None:
+    dataset = load_dataset(DATASET_PATH)
+    case = next(case for case in dataset.cases if case.id == "security-sql-injection")
+    expected = case.expected_findings[0]
+    provider = _UsageProvider(
+        LLMReviewOutput(
+            summary="One security issue found.",
+            findings=(
+                LLMReviewFinding(
+                    title=expected.description,
+                    explanation=(
+                        "Matching concepts: "
+                        + "; ".join(group[0] for group in expected.match_terms)
+                    ),
+                    suggestion="Use a parameterized query.",
+                    file_path=expected.file_path,
+                    category=expected.category,
+                    severity=expected.severity,
+                    confidence=1.0,
+                ),
+            ),
+        )
+    )
+
+    result = run_live_evaluation(
+        dataset,
+        provider,
+        dataset_digest="a" * 64,
+        git_state=GitState(commit="abc123", dirty=False),
+        case_id=case.id,
+        agent_role=AgentRole.SECURITY,
+    )
+
+    assert result.agent_role == AgentRole.SECURITY
+    assert result.prompt_version == "review-security-v1"
+    assert result.cases[0].agent_role == AgentRole.SECURITY
+    assert result.cases[0].prompt_version == "review-security-v1"
+    assert result.metrics.usage.total_tokens == 100
+    assert provider.prompts[0].version == "review-security-v1"
+    assert "Specialist assignment: security" in provider.prompts[0].system
+
+
+def test_agent_planning_run_is_deterministic_and_contains_no_model_output() -> None:
+    result = run_agent_planning(
+        load_dataset(DATASET_PATH),
+        case_id="security-sql-injection",
+    )
+
+    assert result.run_kind == "agent_planning"
+    assert result.planner_version == "deterministic-v1"
+    assert result.executed_case_count == 1
+    assert [agent.role for agent in result.cases[0].agents] == [
+        AgentRole.CORRECTNESS,
+        AgentRole.SECURITY,
+    ]
+    assert all(agent.reasons for agent in result.cases[0].agents)
 
 
 def test_default_cli_ignores_real_provider_environment(monkeypatch, capsys) -> None:
@@ -308,6 +400,34 @@ def test_unknown_live_case_is_rejected_before_provider_creation(monkeypatch) -> 
             ]
         )
 
+    git_state_collector.assert_not_called()
+    provider_factory.assert_not_called()
+
+
+def test_plan_only_cli_does_not_create_provider(monkeypatch, capsys) -> None:
+    provider_factory = Mock()
+    git_state_collector = Mock()
+    monkeypatch.setattr("evals.runner._create_deepseek_provider", provider_factory)
+    monkeypatch.setattr("evals.runner.collect_git_state", git_state_collector)
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(DATASET_PATH),
+            "--plan-only",
+            "--case-id",
+            "performance-n-plus-one",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["run_kind"] == "agent_planning"
+    assert payload["cases"][0]["case_id"] == "performance-n-plus-one"
+    assert [agent["role"] for agent in payload["cases"][0]["agents"]] == [
+        "correctness",
+        "performance",
+    ]
     git_state_collector.assert_not_called()
     provider_factory.assert_not_called()
 

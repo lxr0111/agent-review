@@ -2,7 +2,7 @@ from collections.abc import Iterable
 
 from app.domain.review.entities import ReviewContext
 from app.domain.review.report import ReviewReport
-from app.services.review_agent import AgentReviewResult, ReviewAgent
+from app.services.review_agent import ReviewAgent
 from app.services.review_aggregator import ReviewAggregator
 
 
@@ -22,8 +22,5 @@ class ReviewOrchestrator:
         self._aggregator = aggregator
 
     def review(self, context: ReviewContext) -> ReviewReport:
-        results = tuple(
-            AgentReviewResult(role=agent.role, report=agent.review(context))
-            for agent in self._agents
-        )
+        results = tuple(agent.review(context) for agent in self._agents)
         return self._aggregator.aggregate(context=context, results=results)
