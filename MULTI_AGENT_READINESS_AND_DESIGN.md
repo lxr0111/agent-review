@@ -1,0 +1,507 @@
+# AgentReview 多 Agent 改造前评审与设计基线
+
+> 状态：设计基线，尚未实现多 Agent 生产链路
+> 更新时间：2026-09-26
+> 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
+
+## 1. 文档目的
+
+本文记录进入多 Agent 改造前的系统状态、引入动机、设计边界、风险和实施顺序。它解决三个问题：
+
+1. 明确当前已经实现和实测的能力，避免把规划写成成果；
+2. 解释为什么在单 Agent 已经可用的情况下仍考虑多 Agent；
+3. 为后续每一批 Agent 改造提供架构和评测基线。
+
+本文不替代：
+
+- `PROJECT_PLAN.md`：项目最初的总体方案；
+- `PHASE1_IMPLEMENTATION_AND_INTERVIEW_GUIDE.md`：Phase 0～1 历史快照；
+- `PROJECT_EVOLUTION_AND_INTERVIEW_GUIDE.md`：逐批修改、验证证据和面试讲解记录。
+
+## 2. 阶段命名说明
+
+最初的 `PROJECT_PLAN.md` 使用以下阶段：
+
+| 原计划阶段 | 内容 |
+|---|---|
+| Phase 1 | Webhook、Diff、单模型审查、Summary Review |
+| Phase 2 | 可靠性、状态机、重试、行级评论 |
+| Phase 3 | Tree-sitter、语法上下文、分片 |
+| Phase 4 | Planner、专业 Reviewer、Validator、Aggregator |
+| Phase 5 | 评测、报告和作品化 |
+
+实际实施顺序发生了合理调整：
+
+- Phase 2 中的幂等、状态机、重试、Head SHA 保护已经完成；
+- Phase 2 的行级评论尚未完成；
+- Phase 3 的 Tree-sitter 和语法分片尚未开始；
+- Phase 5 的评测基础被提前完成，用于给 Prompt 和 Agent 改造提供回归基线；
+- 接下来准备进入原计划 Phase 4 的 Agent 能力。
+
+因此后续统一称为“Agent 化阶段”或“Multi-Agent Phase”，不再把它简称为 Phase 2，避免和原计划混淆。
+
+## 3. 当前系统的准确定位
+
+当前系统是：
+
+> 一个真实 GitHub App 联调通过、具备幂等和故障恢复、能够调用 DeepSeek 生成结构化结果并发布 Summary Review、拥有离线质量基线的单 Agent 代码评审系统。
+
+当前系统不是：
+
+- 多 Agent 系统；
+- 行级代码评论系统；
+- AST 或调用图驱动的静态分析系统；
+- LLM Exactly Once 系统；
+- 已完成生产性能压测的服务；
+- 已证明在真实项目分布上具备某个准确率的产品。
+
+## 4. 当前执行链路
+
+```text
+GitHub pull_request event
+          │
+          ▼
+Webhook signature + payload validation
+          │
+          ▼
+Delivery idempotency + Review Task idempotency
+          │
+          ▼
+Celery reviews.run
+          │
+          ▼
+Fetch PR + changed files + verify head SHA
+          │
+          ▼
+File filtering + patch budget + ReviewContext
+          │
+          ▼
+ReviewPrompt v2 → one LLM call
+          │
+          ▼
+Schema and business validation
+          │
+          ▼
+Persist one ReviewReport and Findings
+          │
+          ▼
+Recheck head SHA + idempotent publication
+          │
+          ▼
+GitHub Summary Review
+```
+
+当前模型阶段的实际关系是：
+
+```text
+ReviewPipelineService
+        → AIReviewService
+            → ReviewPromptBuilder
+                → LLMProvider
+```
+
+`ReviewPipelineService` 目前直接依赖具体的 `AIReviewService`，还没有统一的 `ReviewEngine` 或 Agent Orchestrator 边界。
+
+## 5. 已经实现的能力
+
+### 5.1 GitHub 与异步主链路
+
+- GitHub App Installation Token；
+- Webhook Secret 验签；
+- `opened`、`synchronize`、`reopened` 事件；
+- PR 元数据与 Changed Files 获取；
+- FastAPI 快速接收，Celery 异步执行；
+- MySQL 持久化任务、文件、报告、Finding 和 Publication；
+- GitHub Summary Review 发布；
+- 新 Commit 根据新 Head SHA 创建新评审任务。
+
+### 5.2 幂等与一致性
+
+- Webhook 唯一身份：`provider + delivery_id`；
+- Review Task 唯一身份：`repository + PR number + head SHA`；
+- 每个 Task 只允许一个 Report；
+- 每个 Report 和 Provider 只允许一个 Publication；
+- 应用层快速复用与数据库唯一约束共同兜底；
+- 发布前重新获取 PR 并校验 Head SHA；
+- GitHub Review Marker 用于远程对账，避免本地状态丢失后重复发布。
+
+### 5.3 重试与阶段级恢复
+
+- Timeout、连接错误、HTTP 429、HTTP 500/503 可重试；
+- HTTP 401/403 和非法结构化输出不可重试；
+- 指数退避和随机抖动；
+- `Retry-After` 优先于默认退避；
+- Report 已保存后，Publication 重试不会重新调用模型；
+- 终态任务不会被重复执行。
+
+系统保证业务结果幂等，不保证 LLM Exactly Once。如果模型已收到请求但客户端在响应返回前超时，重试可能产生第二次模型调用。
+
+### 5.4 模型 Provider 与 Prompt
+
+- Mock、OpenAI Responses、DeepSeek Responses Provider；
+- 自定义 Base URL、API Key 和 Model；
+- 结构化输出与 Pydantic 校验；
+- Provider 错误分类；
+- Input、Output、Total Token Usage；
+- Prompt v2 的证据约束、Prompt Injection 边界、Testing 降噪和 Severity Rubric。
+
+### 5.5 评测与回归
+
+- 10-case `seed-v1` 开发集；
+- 10-case `holdout-v1` 冻结验证集；
+- 修复已知 Fixture 的 `holdout-v2` corrected regression set；
+- Mock evaluator self-test；
+- DeepSeek live baseline；
+- Dataset SHA-256、Git Commit、Prompt、Model 元数据；
+- Matcher v1/v2；
+- 离线 Rescore；
+- Baseline Comparator；
+- `--case-id` 精确 partial trial；
+- Recall、Precision、F1、False Positive、Category、Severity、Schema、Case Pass、Latency 和 Usage。
+
+## 6. 已验证结果
+
+### 6.1 自动化证据
+
+截至进入 Agent 化阶段前：
+
+```text
+Eval tests: 51 passed
+All tests: 217 passed
+Ruff: passed
+mypy app evals: passed
+git diff --check: passed
+```
+
+### 6.2 真实集成证据
+
+- Docker Compose 中 API、MySQL、Redis、Worker 正常；
+- 真实 GitHub PR 完成 Webhook → Worker → DeepSeek → GitHub Review；
+- 同一 PR 新 Commit 能重新评审；
+- Webhook Redelivery 不重复创建任务、调用模型或发布 Review；
+- Timeout、429、500/503、401 和非法结构化输出故障场景已验证；
+- Report 已持久化后的 Publication 恢复不会重新调用模型；
+- `holdout-v2` 修复后的路径 containment negative case 使用真实 DeepSeek 返回零 Finding。
+
+### 6.3 Prompt 回归结果
+
+相同 `seed-v1` 上的单次真实结果：
+
+| 指标 | Prompt v1 | Prompt v2 |
+|---|---:|---:|
+| Recall | 1.0 | 1.0 |
+| Precision | 0.4444 | 1.0 |
+| False Positives | 10 | 0 |
+| Negative Sample Pass Rate | 0.0 | 1.0 |
+| Severity Match | 0.25 | 1.0 |
+| Case Pass Rate | 0.1 | 1.0 |
+
+这是小型开发集上的单次结果，不能外推为生产准确率。
+
+### 6.4 Holdout 审计结果
+
+`holdout-v1` 的原始自动 Recall 为 0.75。人工审计确认：
+
+- 8/8 个目标问题实际都被模型识别；
+- 两个自动漏报来自 Matcher v1 无法识别等价措辞；
+- 一个自动误报来自 negative fixture 缺少 Import；
+- Category 人工确认 7/8；
+- Severity 人工确认 5/8。
+
+Matcher v2 对同一批历史输出的离线 Rescore：
+
+| 指标 | Matcher v1 | Matcher v2 |
+|---|---:|---:|
+| Recall | 0.75 | 1.0 |
+| Precision | 0.6667 | 0.8889 |
+| F1 | 0.7059 | 0.9412 |
+| False Positives | 3 | 1 |
+| Case Pass Rate | 0.3 | 0.5 |
+
+剩余的一条自动 False Positive 是模型正确发现的 Fixture 缺陷，没有通过修改 Matcher 隐藏。
+
+## 7. 当前限制
+
+### 7.1 模型和上下文限制
+
+- 所有类别共用一个 General Prompt；
+- 一个模型调用同时承担发现问题、分类、严重程度和去重；
+- 只提供 PR 元数据和 Patch，没有完整文件、符号或调用图；
+- 没有 Tree-sitter 函数/类级上下文；
+- 没有跨文件依赖分析；
+- 超大 Patch 只能按字符预算过滤，不能语法感知分片。
+
+### 7.2 输出和发布限制
+
+当前 Finding 只有：
+
+```text
+title
+explanation
+suggestion
+file_path
+severity
+category
+confidence
+```
+
+目前缺少：
+
+- `start_line/end_line`；
+- 独立 `evidence`；
+- `agent_role`；
+- Finding 指纹；
+- 验证状态；
+- GitHub Diff Position。
+
+因此当前只发布 Summary Review，不能可靠发布 Inline Comment。
+
+### 7.3 可观测性与成本限制
+
+- Token Usage 目前主要进入 Eval，没有生产级 Agent Call 表；
+- 没有版本化价格快照，Cost 为 `null`；
+- 没有 Agent 级 Latency、错误率和贡献度；
+- 没有真实并发吞吐和生产 P50/P95；
+- 没有用户反馈闭环。
+
+## 8. 为什么考虑多 Agent
+
+多 Agent 不是让系统“看起来更像 Agent 项目”，而是把一个职责过重的模型调用拆成可独立设计、评测和恢复的专业步骤。
+
+当前 General Prompt 同时要求模型关注：
+
+- correctness；
+- security；
+- reliability；
+- performance；
+- maintainability；
+- evidence；
+- severity；
+- confidence；
+- 去重和结构化输出。
+
+这些目标会竞争模型注意力。明显的 correctness 问题可能压过需要威胁建模的安全问题；模型也可能发现了正确问题，但 Category 或 Severity 不稳定。
+
+多 Agent 希望把任务拆为：
+
+```text
+ReviewContext
+      │
+      ▼
+Deterministic Planner
+      │
+      ├── Correctness Reviewer
+      ├── Security Reviewer
+      ├── Performance Reviewer
+      └── Maintainability Reviewer
+                 │
+                 ▼
+              Validator
+                 │
+                 ▼
+              Aggregator
+                 │
+                 ▼
+         Existing ReviewReport
+```
+
+现有 Report 持久化、Publication 和 GitHub 发布链路应继续复用，不应因为多 Agent 重写整条系统。
+
+## 9. 预期收益：需要评测验证的假设
+
+| 方面 | 当前瓶颈 | 多 Agent 假设 |
+|---|---|---|
+| 专业召回 | 一个 Prompt 同时关注多个目标 | 专业 Reviewer 更容易发现细分类问题 |
+| 安全审查 | 通用 Prompt 缺少持续威胁视角 | Security Reviewer 专注输入边界、鉴权和注入 |
+| 性能审查 | 容易被明显正确性问题抢占注意力 | Performance Reviewer 专注复杂度、阻塞和资源消耗 |
+| Category | Holdout 已出现分类偏移 | Validator 使用统一标签规则重新检查 |
+| Severity | Holdout 已出现严重程度上调 | Validator 使用统一影响范围和前置条件校准 |
+| 误报 | 每次调用自己决定证据是否充分 | Validator 过滤无直接证据的 Finding |
+| 重复意见 | 多 Agent 可能发现同一根因 | Aggregator 使用指纹和文本相似度去重 |
+| 可解释性 | 只能看到一个最终 Report | 记录 Agent Role、验证和聚合决策 |
+| 可评测性 | 只能评整体 Prompt | 分别统计各 Agent 的召回、误报、Token 和贡献 |
+| 可扩展性 | 修改一类规则影响统一 Prompt | 可以独立升级某个专业 Reviewer |
+
+这些都是待验证假设，不是当前成果。只有在冻结数据或新未见数据上证明质量收益，才能写入简历。
+
+## 10. 多 Agent 的成本和风险
+
+### 10.1 成本与延迟
+
+- 调用次数增加通常会增加总 Token；
+- 并行可能降低墙钟时间，但不会降低总费用；
+- 更多并发会提高 Provider 429 概率；
+- Validator 和 Aggregator 如果也调用 LLM，会进一步增加成本和不确定性。
+
+第一版优先使用确定性 Planner、Validator 和 Aggregator，只让 Reviewer 调用模型。
+
+### 10.2 重复和冲突
+
+- 多个 Reviewer 可能报告同一问题；
+- 相同问题可能使用不同 Category；
+- Severity 和 Confidence 可能冲突；
+- 一个 Agent 的建议可能与另一个 Agent 矛盾。
+
+必须先定义 Finding Identity、去重优先级和冲突规则，不能简单拼接输出。
+
+### 10.3 重试费用放大
+
+当前恢复单位是完整 Report。如果四个 Agent 中前三个成功、第四个超时，而中间结果没有持久化，Celery 重试会重新调用前三个 Agent。
+
+因此生产多 Agent 上线前必须考虑：
+
+- Agent Execution 唯一身份；
+- 每个 Agent 的状态和 attempt count；
+- 单 Agent 结果持久化；
+- 单 Agent Usage 和错误码；
+- 重试时只执行未完成 Agent；
+- Aggregation 的幂等身份；
+- 部分失败是否允许发布 `PARTIAL`。
+
+## 11. 设计原则
+
+1. **先兼容再扩展**：第一批只有 General Agent，生产行为和模型调用次数不变。
+2. **先确定性后智能化**：Planner、Validator、Aggregator 第一版尽量使用规则，不额外调用 LLM。
+3. **先离线评测再接生产**：专业 Agent 先通过 Eval 运行，不直接替换 Worker 主链路。
+4. **结果可追溯**：Finding 应能追溯到 Agent Role、Prompt Version 和 Model。
+5. **成功结果可恢复**：生产多 Agent 调用前先解决 Agent 级持久化。
+6. **预算是输入，不是事后统计**：限制最大 Agent 数、Token 和并发。
+7. **允许降级**：Planner 或专业 Agent 不可用时能够回退 General Agent。
+8. **不破坏现有可靠性**：Report、Publication、Head SHA 和远程对账继续复用。
+
+## 12. 分批实施顺序
+
+### 第一批：Agent 架构接缝
+
+目标：改变结构，不改变行为。
+
+- 新增 `ReviewEngine` Protocol；
+- 新增 `ReviewAgent` Protocol 和 `AgentRole`；
+- 用 `GeneralReviewAgent` 包装现有 `AIReviewService`；
+- 新增 `ReviewOrchestrator`；
+- 新增单 Agent passthrough Aggregator；
+- `ReviewPipelineService` 改为依赖 `ReviewEngine`；
+- Pipeline Factory 组装一个 General Agent；
+- 仍然只有一次 LLM 调用。
+
+本批完成后仍不能声称多 Agent 已经完成。
+
+### 第二批：专业 Agent 和 Planner
+
+- Correctness、Security、Performance、Maintainability Agent；
+- 每个 Agent 使用独立 Prompt Version；
+- Agent Registry；
+- Deterministic Planner；
+- Planner 根据 Patch、路径和文件类型选择 Agent；
+- 先只接 Eval，不替换生产 Pipeline。
+
+### 第三批：Validator 和 Aggregator
+
+- 文件路径与上下文范围验证；
+- Finding 指纹；
+- 跨 Agent exact duplicate 去重；
+- Category、Severity、Confidence 冲突规则；
+- 确定性 Summary 和 Risk Level；
+- 记录保留、合并和拒绝原因。
+
+### 第四批：Agent 级持久化与恢复
+
+- Agent Execution ORM 和 Migration；
+- Agent 状态、attempt count、usage、latency 和错误码；
+- 已成功 Agent 结果复用；
+- 部分失败恢复；
+- Aggregation 幂等；
+- 明确 `PARTIAL` 策略。
+
+### 第五批：并发与预算
+
+- 并行执行独立 Reviewer；
+- 最大并发和最大 Agent 数；
+- Token Budget；
+- Provider Rate Limit；
+- 超时与取消传播；
+- General Agent 降级策略。
+
+### 第六批：生产切换和评测
+
+- 单 Agent 与多 Agent 离线 A/B；
+- 新未见数据，避免继续调优现有 Holdout；
+- 真实 Provider 小流量试跑；
+- 回归阈值；
+- 满足质量、成本和可靠性门槛后再切换 Worker Factory。
+
+## 13. 评测计划
+
+多 Agent 至少需要比较：
+
+| 指标 | 目的 |
+|---|---|
+| Recall | 是否发现更多真实缺陷 |
+| Precision / False Positives | 专业 Agent 是否带来更多噪声 |
+| Category Match | 专业分类是否更稳定 |
+| Severity Match | Validator 是否减少严重程度膨胀 |
+| Case Pass Rate | 严格整体质量是否提高 |
+| Schema Validity | 多输出链路是否稳定 |
+| Total Tokens | 质量收益需要多少额外成本 |
+| Latency P50/P95 | 并发是否真正降低墙钟时间 |
+| Agent Contribution | 每个 Agent 提供了多少独有有效 Finding |
+| Duplicate Rate | 聚合前后重复意见数量 |
+| Partial Recovery | 单 Agent 失败是否会重复调用成功 Agent |
+
+比较必须满足：
+
+- 相同 Dataset SHA；
+- 固定 Model 和 Provider 参数；
+- 明确 Prompt/Agent/Planner/Aggregator Version；
+- 原始输出和聚合输出都可审计；
+- 不用 Mock 结果证明模型质量；
+- 不把一次运行外推为稳定结论。
+
+现有 `seed-v1` 可以用于开发回归，现有 Holdout 已被开发流程看到。对多 Agent 的泛化结论需要新的未见案例或真实 PR 样本。
+
+## 14. Agent 化阶段完成标准
+
+多 Agent 不能以“代码中存在多个 Agent 类”作为完成标准。至少应满足：
+
+- Planner 对不同变更选择不同 Reviewer；
+- 每个 Reviewer 有独立职责和 Prompt Version；
+- 同一根因不会发布多次；
+- 标签冲突有确定性规则；
+- 单 Agent 成功结果不会因其他 Agent 重试而丢失；
+- 有全局和单任务预算；
+- Worker 仍具备 Head SHA 保护和 Publication 幂等；
+- 有单 Agent vs 多 Agent 的真实模型评测；
+- 文档明确质量收益、Token 代价和剩余限制。
+
+## 15. 面试表达
+
+### 当前可以说
+
+> 我已经完成一个真实 GitHub App 接入的单 Agent PR 评审系统，重点实现了 Webhook 和任务幂等、错误分类、指数退避、Report 断点恢复、Publication 远程对账，以及带真实 DeepSeek baseline 的离线评测体系。在进入多 Agent 前，我先把模型质量、评测器误差和数据集缺陷分开审计，并为后续 Agent A/B 建立了可复现基线。
+
+### 第一批 Agent 接缝完成后可以说
+
+> 我把 Pipeline 从具体 AIReviewService 解耦为 ReviewEngine，并通过 GeneralReviewAgent 和 Orchestrator 兼容现有行为，为后续增加专业 Reviewer 建立稳定边界；这一阶段仍保持一次模型调用，没有提前声称多 Agent 提升质量。
+
+### 只有真实完成和验证后才能说
+
+- 实现动态 Agent 路由；
+- 实现多 Agent 并行；
+- Validator 降低了误报或 Severity 偏差；
+- 多 Agent 提升了 Recall 或 Case Pass；
+- Agent 级断点恢复避免了重复模型费用；
+- 达到了某个 P50/P95、Token 或 Cost 指标。
+
+## 16. 下一步
+
+下一批只实施“Agent 架构接缝”：
+
+```text
+ReviewPipelineService
+        → ReviewEngine
+            → ReviewOrchestrator
+                → GeneralReviewAgent
+                    → existing AIReviewService
+```
+
+验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。

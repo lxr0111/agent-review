@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
-> 最后更新：2026-09-25
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到当前 Provider usage metadata 改造完成为止。
+> 最后更新：2026-09-26
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到进入 Agent 化阶段前的设计基线。
 
 ## 1. 这份文档的用途
 
@@ -1313,7 +1313,7 @@ v2 是在阅读 v1 模型结果后产生的数据修正版。它可以作为未�
 - 当前只有 Mock self-test，尚无修复后案例的真实模型结果；
 - Eval Runner 的显式 `--case-id` 已在下一节实现，可只运行目标案例做低成本验证；
 - 部分 live run 只能作为 trial，不能保存成完整 Model Baseline；
-- 进入 Phase 2 后仍需要新的未见数据验证多 Agent 是否真正泛化。
+- 进入 Agent 化阶段后仍需要新的未见数据验证多 Agent 是否真正泛化。
 
 ---
 
@@ -1409,6 +1409,71 @@ Cost: unavailable
 - corrected fixture 已被开发流程看到，真实试跑也不能称为盲测；
 - 本次 `7.88s` 延迟和 2752 Tokens 只描述一个请求，不能当成生产 SLO 或平均成本；
 - partial trial 结果不写入 `evals/baselines/`，也不用于跨 Dataset 的模型质量对比。
+
+---
+
+### 3.18 进入 Agent 化阶段前的架构评审
+
+#### 为什么先评审再写 Agent
+
+当前系统已经完成真实 GitHub/DeepSeek 主链路、业务幂等、故障恢复和离线评测。如果直接把四个模型调用塞进 Worker，会同时引入重复 Finding、标签冲突、成本放大和重试重复调用，反而破坏现有可靠性。
+
+因此在写多 Agent 代码前，先固化当前单 Agent 的能力、证据、限制和演进原则。详细设计见：
+
+- [`MULTI_AGENT_READINESS_AND_DESIGN.md`](MULTI_AGENT_READINESS_AND_DESIGN.md)
+
+#### 当前准确定位
+
+当前是可靠、可评测、真实联调通过的单 Agent Summary Review 系统。已经实现的核心价值包括：
+
+- GitHub App → FastAPI → Celery → DeepSeek → GitHub Review 真实闭环；
+- Delivery、Task、Report 和 Publication 幂等；
+- Provider 错误分类、指数退避、`Retry-After` 和阶段级恢复；
+- Prompt v2、真实 baseline、Holdout、Matcher v2 和离线 Rescore；
+- 能区分模型错误、评测器错误和 Dataset Fixture 缺陷。
+
+尚未实现：
+
+- Planner、专业 Reviewer、Validator 和 Aggregator；
+- Agent 级状态、Usage、持久化和断点恢复；
+- Agent 并发、预算与降级；
+- Tree-sitter、语法分片、行号和 Inline Comment。
+
+#### 阶段命名修正
+
+原始 `PROJECT_PLAN.md` 中：Phase 2 是可靠性与行级评论，Phase 3 是语法上下文，Phase 4 才是多 Agent。实际实施中，评测能力被提前完成，而行级评论和 Tree-sitter 仍未开始。
+
+后续统一称为“Agent 化阶段”或“Multi-Agent Phase”，不再把它简称为 Phase 2，避免面试时阶段定义前后不一致。
+
+#### 为什么考虑多 Agent
+
+当前一个 General Prompt 同时负责 correctness、security、reliability、performance、maintainability、evidence、severity 和去重。多 Agent 的目标是把这些竞争职责拆成可独立设计和评测的专业 Reviewer，再通过确定性 Validator 和 Aggregator 控制证据、标签和重复意见。
+
+预期收益包括专业召回、标签稳定性、可解释性和可扩展性，但这些只是待验证假设。更多 Agent 也会带来更高 Token、更多 429、重复 Finding 和更复杂的恢复语义。
+
+#### 最关键的可靠性风险
+
+当前恢复单位是完整 Report。如果四个 Agent 中前三个成功、第四个超时，而中间结果没有持久化，Celery 重试会重新调用前三个 Agent并重复计费。
+
+因此生产多 Agent 上线前必须设计 Agent Execution 身份、单 Agent 结果持久化、attempt count、Usage、错误码和 Aggregation 幂等。不能只实现几个 Agent 类就声称完成多 Agent 系统。
+
+#### 第一批边界
+
+下一批只建立兼容接缝：
+
+```text
+ReviewPipelineService
+        → ReviewEngine
+            → ReviewOrchestrator
+                → GeneralReviewAgent
+                    → existing AIReviewService
+```
+
+这一批仍只调用一次模型，不修改 Prompt、Provider、Report Schema 或数据库，不增加并发，也不声称质量提升。验收标准是生产行为与现有单 Agent 完全兼容，并为后续专业 Agent 建立可测试边界。
+
+#### 面试怎么讲
+
+> 我没有为了使用 Agent 概念直接堆多个模型调用，而是先审计现有单 Agent 系统的恢复单位和评测基线。多 Agent 最大的工程风险不是类怎么拆，而是第四个 Agent 失败后会不会让前三个成功调用重新付费。因此我先用 ReviewEngine 和单 General Agent 建立兼容接缝，再逐步加入专业 Reviewer、Agent 级持久化和聚合规则，并要求每一步用同一评测体系证明收益。
 
 ---
 
@@ -1626,11 +1691,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 `--case-id`、门禁测试、真实 single-case 证据和说明文档；
-2. 评测闭环完成后进入 Phase 2，设计 `ReviewAgent`、Orchestrator 和 Aggregator；
-3. 定义多 Agent 的职责边界、共享 Context、Finding 去重和冲突处理规则；
-4. 为多 Agent 改造准备新的未见案例，避免继续对现有 Holdout 调优；
-5. 后续增加重复运行、回归阈值和版本化价格快照。
+1. 实施 Agent 架构接缝：`ReviewEngine`、`ReviewAgent`、General Agent、Orchestrator 和 passthrough Aggregator；
+2. 保持现有 Prompt、Provider、Report 和模型调用次数不变，先证明结构迁移零行为回归；
+3. 再实现专业 Reviewer、Deterministic Planner 和 Agent Registry，先接入 Eval 而不是生产 Worker；
+4. 在生产多 Agent 前完成 Finding 去重、标签冲突规则和 Agent 级持久化恢复；
+5. 使用新的未见案例比较单 Agent 与多 Agent 的质量、Token 和延迟。
 
 ### 9.2 后续能力
 
