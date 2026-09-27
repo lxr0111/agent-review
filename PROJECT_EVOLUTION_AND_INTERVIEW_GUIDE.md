@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-27
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到真实多 Agent 去重缺陷与 Finding Identity v2 修复完成。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Finding Identity v2 真实多 Agent重验通过。
 
 ## 1. 这份文档的用途
 
@@ -2036,7 +2036,7 @@ Mock multi-agent CLI: passed
 - 任一 Agent 失败会让 Case 失败，尚未定义生产 `PARTIAL` 策略；
 - Agent Execution 与 Aggregation 审计尚未持久化；
 - 现有 Seed 是开发集，Mock 输出由 Expected Findings 生成；
-- 尚无新的混合缺陷数据集或真实 DeepSeek 多 Agent 结果；
+- 本阶段完成时尚无真实 DeepSeek 多 Agent 结果；后续真实试跑与修复见 3.23；
 - 生产仍是单 General Agent 和 `PassthroughReviewAggregator`。
 
 ---
@@ -2123,19 +2123,55 @@ Mock multi-agent CLI: passed
 
 修复前的真实 DeepSeek partial trial 绑定 Git commit `e6f43d0` 和固定 Seed SHA，两个 Agent 与 Usage 通道均成功。工作区因个人文档显示 dirty，因此不是 baseline。该次运行证明真实多 Agent 执行链路可用，同时证明 Identity v1 会漏合并这组同根因输出。
 
-Identity v2 当前只有自动化回归和 Mock CLI 证据，尚未重新调用 DeepSeek；不能把预期的 `2 -> 1` 合并写成已经完成的真实结果。
+提交 `dd95c4b` 后，使用相同 Dataset、Case、Provider 和显式 `--multi-agent` 参数完成 Identity v2 真实重验：
+
+```text
+finding_identity_version: finding-text-v2
+planned roles: correctness, security
+successful agent calls: 2/2
+pre-aggregation findings: 2
+post-aggregation findings: 1
+merged findings: 1
+duplicate rate: 0.5
+false positives: 0
+case pass: true
+```
+
+两个 Agent 分别使用 2276 和 1409 Tokens，总计 3685 Tokens；总墙钟时间约 8.55 秒。Aggregator 保留 Security Finding，并把 Correctness Finding 记为 merged；两个角色的 `unique_finding_count` 都是 0，说明这个案例中第二个调用提供了重复确认，但没有新增最终问题。
+
+修复前后对比：
+
+| 指标 | Identity v1 | Identity v2 |
+|---|---:|---:|
+| 聚合前 Findings | 2 | 2 |
+| 聚合后 Findings | 2 | 1 |
+| Merged | 0 | 1 |
+| Duplicate Rate | 0.0 | 0.5 |
+| False Positive | 1 | 0 |
+| Case Pass | false | true |
+| Total Tokens | 3420 | 3685 |
+| Latency | 7293 ms | 8547 ms |
+
+两次 Input Tokens 都是 2151，Token 差异来自模型输出长度；延迟也包含网络和生成波动。Identity 是本地确定性逻辑，不能把第二次 Token 或延迟变化归因于 Identity v2。
+
+本次 `aggregation_conflict_count=1`，说明两个原始 Finding 的 Category 或 Severity 至少有一项不同。但当前 Case JSON 只暴露冲突数量，没有输出冲突字段、观察值和选择原因；每个 Agent Execution 也只保留 Finding Count，没有序列化原始 Finding。因此不能从这份结果猜测具体冲突标签。这是下一批需要补齐的可观测性缺口。
+
+重验绑定 commit `dd95c4b`，仍因个人文档显示 `git_dirty=true`，并且只执行一个已见 Seed 案例，所以是 partial trial，不是 baseline，也不能外推为多 Agent 整体质量或稳定性能结论。
 
 #### 面试怎么讲
 
 > 第一次真实多 Agent 试跑里，Correctness 和 Security 都正确发现了同一个 SQL 插值问题，但模型使用不同措辞，导致词法去重漏合并，评测器把第二条算成误报。我没有去调低一个全局相似度阈值，而是增加了保守的证据路径：同文件、共同根因 bigram、至少两个信号词，并且 Explanation 引用同一代码片段才合并。同时加了“同一 SQL 代码上的注入与缺少索引不能合并”的负例。这样修复的是同根因识别，同时控制过度合并风险。
 
+> 修复提交后我用相同真实案例重验，两个 Agent 仍各输出一条同根因 Finding，v2 成功把结果从两条合并成一条，False Positive 从 1 降到 0，Case Pass 恢复。这个 A/B 同时暴露了下一层问题：评测 JSON 只有 conflict count，没有冲突明细和原始 Agent Finding，所以我不会猜冲突标签，而是把审计可观测性作为下一批工作。
+
 #### 当前限制
 
 - v2 依赖模型在 Explanation 中使用 Markdown code span；没有共同代码引用的深度同义改写仍可能漏配；
 - bigram 与信号词仍是词法启发式，不是 AST 或语义 Embedding；
-- Identity v2 尚未完成真实 DeepSeek 重跑；
 - 当前试跑是已见 Seed 单案例，不能证明泛化质量；
-- 多 Agent 仍为顺序执行，3420 Tokens 和 7.29 秒只是一条观测，不是稳定成本或延迟结论。
+- Eval 只输出 Aggregation Conflict 数量，尚未输出冲突字段、观察值与选择原因；
+- Agent Execution 尚未序列化各 Agent 原始 Finding，无法从运行 JSON 完整重放聚合判断；
+- 多 Agent 仍为顺序执行，两次 Token 和延迟只是单点观测，不是稳定成本或性能结论。
 
 ---
 
@@ -2382,7 +2418,8 @@ git diff --check: passed
 - 四个专业 Agent 已完成 6 次真实 DeepSeek 单案例 partial trial：四个正例全部命中、两个负例均为 0 Finding，6/6 Case Pass、0 False Positive、Schema 全部合法；总计 8539 Tokens。
 - 相同 6 个案例的 General v2 使用 8205 Tokens；专业单角色试跑多使用 334 Tokens（约 4.1%），质量指标在这些简单已见案例上相同。该比较不等于 Planner 实际多 Agent 总成本，也不构成泛化质量结论。
 - 第一次真实 DeepSeek 多 Agent SQL 注入 partial trial 绑定 commit `e6f43d0`：Correctness 与 Security 均成功，总计 3420 Tokens、约 7.29 秒；Identity v1 未合并两个同根因 Finding，导致 1 个评测 False Positive 和 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline。
-- Finding Identity v2 已用这组真实输出构建自动化回归，但尚未完成真实 DeepSeek 重跑。
+- Finding Identity v2 真实重验绑定 commit `dd95c4b`：两个 Agent 均成功，聚合从 `2 -> 2` 修复为 `2 -> 1`，Merged=1、False Positive=0、Case Pass=true；总计 3685 Tokens、约 8.55 秒。该结果仍是 dirty-worktree partial trial，不是 baseline。
+- v2 重验出现 1 个 Aggregation Conflict，但当前 Eval 仅记录数量，无法从输出确定冲突字段；这被保留为后续可观测性工作，而不是猜测结论。
 
 ---
 
@@ -2390,8 +2427,8 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交 Finding Identity v2 后，重跑同一个 SQL 注入 DeepSeek 多 Agent partial trial；
-2. 验证真实结果是否从 `2 -> 2` 变为 `2 -> 1`，且 Case Pass 恢复；
+1. 在 Eval Case 输出中加入 Aggregation Conflict 明细和每个 Agent 的原始 Finding；
+2. 记录每条 Finding 的 kept/merged 决策、规范指纹和选择原因；
 3. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
 4. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
 5. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。

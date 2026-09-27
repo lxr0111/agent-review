@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第一次真实多 Agent 试跑已完成，Finding Identity v2 修复待真实重验，尚未实现生产链路
+> 状态：Finding Identity v2 已通过真实多 Agent 重验，尚未实现生产链路
 > 更新时间：2026-09-27
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -459,6 +459,10 @@ Finding Identity v2 的修复规则：
 - 聚合与 Eval 输出显式记录 `finding-text-v2`；
 - 历史 baseline 缺失该字段时保持 `null`。
 
+提交 `dd95c4b` 后用同一个真实 DeepSeek 案例重验，Correctness 与 Security 均成功返回一个 Finding。Identity v2 将聚合结果从修复前的 `2 -> 2` 改为 `2 -> 1`，`merged=1`、Duplicate Rate=`0.5`、False Positive=`0`、Case Pass=`true`。Aggregator 保留 Security Finding，Correctness Finding 被标记为 merged；总计 3685 Tokens、约 8.55 秒。
+
+本次重验还暴露一个审计缺口：`aggregation_conflict_count=1`，但 Eval JSON 没有输出冲突字段、观察值、选择原因或每个 Agent 的原始 Finding，所以不能判断冲突来自 Category 还是 Severity。下一步先补齐这些聚合审计快照，再扩展混合缺陷数据集。
+
 关键设计边界：
 
 - Category、Severity 不参与 Finding 匹配，避免标签冲突被匹配器掩盖；
@@ -580,6 +584,6 @@ ReviewContext
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
-真实 DeepSeek 多 Agent SQL 注入 partial trial 已绑定 commit `e6f43d0`：Correctness 与 Security 两次调用均成功，共 3420 Tokens、约 7.29 秒。两个 Agent 找到同一根因，但 Identity v1 没有合并，导致 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline；Identity v2 尚未真实重验。
+真实 DeepSeek 多 Agent SQL 注入试跑形成了可对照的两次 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出，Identity v2 在 commit `dd95c4b` 上成功完成 `2 -> 1` 合并并恢复 Case Pass。两次均因个人文档显示 dirty，且只执行已见 Seed 单案例，因此都不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-下一步提交 Identity v2，再用同一个 SQL 注入案例重跑真实 DeepSeek，验证聚合能否从 `2 -> 2` 修正为 `2 -> 1`。随后增加混合缺陷、重复 Finding 和标签冲突案例，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+下一步先让 Eval 输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，再增加混合缺陷、重复 Finding 和标签冲突案例。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
