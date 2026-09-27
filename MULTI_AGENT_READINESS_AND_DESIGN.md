@@ -580,13 +580,13 @@ ReviewContext
 
 生产链路仍通过一个 General Agent 和 `PassthroughReviewAggregator` 调用一次模型；上面的多 Agent 流程只存在于 Eval，不改变数据库和 GitHub 发布行为。
 
-自动化验收结果为 277 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。Identity v2 新增真实同义输出正例、同代码不同问题负例、Aggregator 合并结果、版本元数据和历史 baseline 兼容测试。
+自动化验收结果为 278 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。除 Identity v2 的同义输出和不同问题边界外，测试现在还覆盖原始 Agent Findings、kept/merged 决策、Category/Severity 冲突明细和历史 baseline 兼容。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
-真实 DeepSeek 多 Agent SQL 注入试跑形成了可对照的两次 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出，Identity v2 在 commit `dd95c4b` 上成功完成 `2 -> 1` 合并并恢复 Case Pass。两次均因个人文档显示 dirty，且只执行已见 Seed 单案例，因此都不是 baseline，不能外推稳定成本、延迟或总体质量。
+真实 DeepSeek 多 Agent SQL 注入试跑形成了三个阶段的 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出；Identity v2 在 commit `dd95c4b` 上完成 `2 -> 1` 合并并恢复 Case Pass；聚合审计版本在 commit `5d2e66d` 上进一步记录两份原始 Findings、Security `kept`、Correctness `merged` 和共同规范指纹。第三次结果为 False Positive=0、Case Pass=true、3637 Tokens、约 7.83 秒。三次都只执行已见 Seed 单案例，且工作区因个人文档显示 dirty，所以不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策。下一步增加混合缺陷、相邻但不同根因 Finding 和标签冲突案例，并在代码提交后用既有 SQL 注入案例做一次受保护的真实重验。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并通过真实 DeepSeek SQL 注入案例验证新格式。下一步增加混合缺陷、相邻但不同根因 Finding 和标签冲突案例。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
 
 ## 17. 聚合审计快照
 
@@ -598,6 +598,10 @@ Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 
 
 最终 `actual_findings` 仍是去重后的发布候选，Matcher 只对它评分。这样审计信息不会改变 Recall、False Positive、Category Match 或 Severity Match 的定义。旧 baseline 缺少这些字段时默认加载为空，不重写历史事实。
 
-自动化测试覆盖无冲突合并、Category/Severity 双冲突、失败前已完成 Agent 的原始输出保留，以及历史 baseline 兼容。本批没有调用真实 Provider；此前 SQL 注入 live trial 的 Conflict 字段不能从旧输出倒推，必须在新提交上重新运行才能形成真实审计证据。
+自动化测试覆盖无冲突合并、Category/Severity 双冲突、失败前已完成 Agent 的原始输出保留，以及历史 baseline 兼容。
+
+提交 `5d2e66d` 后的真实 DeepSeek 重验验证了新审计格式：Correctness 与 Security Agent 各生成一个 SQL 注入 Finding，二者 Category/Severity 都为 `security/high`；Aggregator 按角色匹配和置信度保留 Security 的 `0.97` Finding，合并 Correctness 的 `0.95` Finding，并用同一个规范指纹关联两条决策。最终 `2 -> 1`、Duplicate Rate=`0.5`、Case Pass=true、False Positive=0，总计 3637 Tokens，墙钟时间约 7.83 秒。
+
+这次没有标签冲突，因此 `aggregation_conflicts` 合理地为空；旧试跑中的单个 Conflict 没有复现，不能从本次结果反推旧字段。两个 Agent 的 `unique_finding_count` 都为 0，说明这个案例验证了去重和审计，而没有提供 Recall 增益证据。运行是 dirty-worktree partial trial，不是模型 baseline。
 
 这仍是 Eval-only 能力：审计快照没有进入 ORM、数据库或 GitHub Review，生产仍运行单 General Agent。模型原始 Finding 可能包含短代码证据，保存实验 JSON 时应按普通评审输出管理，不能将其当作无敏感内容的纯指标文件。

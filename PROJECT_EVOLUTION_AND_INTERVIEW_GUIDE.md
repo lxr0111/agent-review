@@ -2351,7 +2351,9 @@ Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指�
 
 #### 真实集成证据
 
-本批没有调用 DeepSeek、数据库或 GitHub，也没有新增真实模型质量结论。旧的真实 SQL 注入结果仍只能提供 Conflict 数量；需要在本批提交后显式重跑，新的 JSON 才能展示该次模型输出的真实冲突明细。
+提交 `5d2e66d` 后，使用真实 DeepSeek 对 `security-sql-injection` 做了一次显式多 Agent partial trial。Correctness 与 Security Agent 均成功，各返回一个 Finding；新 JSON 完整保留两份原始输出，并记录 Security Finding 为 `kept`、Correctness Finding 为 `merged`，两条决策指向同一个规范指纹。聚合结果为 `2 -> 1`，Case Pass=true、False Positive=0，总计 3637 Tokens、约 7.83 秒。
+
+本次两个 Agent 都给出 `security/high`，所以 `aggregation_conflict_count=0`，这是正确的无冲突结果。上一次运行中的一个 Conflict 没有在本次随机模型输出中复现，因此仍不能倒推上次冲突的具体字段。此次运行没有访问数据库或 GitHub，也没有发布 Review。
 
 #### 面试怎么讲
 
@@ -2451,7 +2453,8 @@ git diff --check: passed
 - 相同 6 个案例的 General v2 使用 8205 Tokens；专业单角色试跑多使用 334 Tokens（约 4.1%），质量指标在这些简单已见案例上相同。该比较不等于 Planner 实际多 Agent 总成本，也不构成泛化质量结论。
 - 第一次真实 DeepSeek 多 Agent SQL 注入 partial trial 绑定 commit `e6f43d0`：Correctness 与 Security 均成功，总计 3420 Tokens、约 7.29 秒；Identity v1 未合并两个同根因 Finding，导致 1 个评测 False Positive 和 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline。
 - Finding Identity v2 真实重验绑定 commit `dd95c4b`：两个 Agent 均成功，聚合从 `2 -> 2` 修复为 `2 -> 1`，Merged=1、False Positive=0、Case Pass=true；总计 3685 Tokens、约 8.55 秒。该结果仍是 dirty-worktree partial trial，不是 baseline。
-- v2 重验出现 1 个 Aggregation Conflict；当次旧 Eval 输出只记录数量，因此仍不追溯猜测冲突字段。现在代码已能输出原始 Findings、冲突观察值、最终值和决策原因，但需要提交后重新进行显式 live trial 才能取得该真实运行的新格式证据。
+- 聚合审计快照真实重验绑定 commit `5d2e66d`：Correctness 与 Security 各返回一条 SQL 注入 Finding，新格式完整记录两份原始 Findings；Security Finding 被 `kept`、Correctness Finding 被 `merged`，两者共享规范指纹 `ce3d975a…513d39e2`。聚合为 `2 -> 1`、Duplicate Rate=`0.5`、False Positive=0、Case Pass=true，总计 3637 Tokens、约 7.83 秒。
+- 本次两个 Agent 均输出 `security/high`，所以 Conflict=0；此前一次 Conflict 没有复现，不能猜测旧冲突字段。两个 Agent 的 `unique_finding_count` 都为 0，因此本案例证明的是真实 Provider 下的去重与可追溯性，不证明多 Agent 提升 Recall。运行绑定已提交代码，但因个人文档使 `git_dirty=true`，且只运行已见 Seed 单案例，所以仍不是 baseline。
 
 ---
 
@@ -2460,9 +2463,8 @@ git diff --check: passed
 ### 9.1 最近下一步
 
 1. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
-2. 提交后对既有 SQL 注入案例做一次受保护的真实重验，确认新审计字段在真实 Provider 输出下完整；
-3. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
-4. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
+2. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
+3. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
 
 ### 9.2 后续能力
 
