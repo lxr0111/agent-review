@@ -182,6 +182,8 @@ def _descriptor(evaluation: EvaluationRun) -> BaselineDescriptor:
         or evaluation.executed_at is None
     ):
         raise BaselineComparisonError("baseline reproducibility metadata is incomplete")
+    if evaluation.agent_role is None:
+        raise BaselineComparisonError("baseline does not identify one agent role")
     return BaselineDescriptor(
         provider=evaluation.provider,
         model_name=evaluation.model_name,

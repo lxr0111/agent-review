@@ -1,7 +1,7 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第三批 Validator 与确定性 Aggregator 第一阶段已完成，尚未实现多 Agent 生产链路
-> 更新时间：2026-09-26
+> 状态：第三批 Eval-only Planned Multi-Agent Runner 已完成，尚未实现多 Agent 生产链路
+> 更新时间：2026-09-27
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
 ## 1. 文档目的
@@ -424,7 +424,7 @@ Deterministic Planner
 
 ### 第三批：Validator 和 Aggregator
 
-实施状态：第一阶段已于 2026-09-26 完成，尚未接入 Eval 多 Agent 执行或生产 Worker。
+实施状态：Validator/Aggregator 第一阶段与 Eval-only Runner 第二阶段均已完成，尚未接入生产 Worker。
 
 - 已完成文件路径、文本字段和 Confidence 的聚合边界验证；
 - 已完成基于规范化 File、Title 和 Explanation 的 SHA-256 Finding 指纹；
@@ -435,6 +435,18 @@ Deterministic Planner
 - 已完成确定性 Summary、Finding 排序和 Risk Level；
 - 已记录 `kept`、`merged` 和冲突原因；
 - 尚未持久化审计结果，也没有行号范围参与身份判断。
+
+第二阶段实际实现：
+
+- `PlannedReviewOrchestrator` 串联 Planner、Registry、专业 Agent 和 Aggregator；
+- 按 Planner 固定顺序执行 Agent，并保留每个 Role、Prompt Version、Latency 和 Result；
+- Agent 失败保留失败角色和已完成执行，Aggregation 失败保留全部 Agent Result；
+- Eval CLI 新增 `--multi-agent`，默认 Mock 且不加载真实 Provider；
+- 真实多 Agent 必须显式 `--provider deepseek --live --multi-agent`；
+- `--multi-agent` 与 `--agent-role`、`--plan-only` 和 `--save-baseline` 互斥；
+- Eval 记录聚合前后 Finding、Merged Count、Conflict、Duplicate Rate 和 Agent Contribution；
+- 所有 Agent Usage 完整时才汇总 Token，缺失时保持 `null`；
+- 历史 Eval/Baseline 缺失 `execution_mode` 时继续解释为单 Agent。
 
 关键设计边界：
 
@@ -533,7 +545,7 @@ Deterministic Planner
 
 ## 16. 下一步
 
-前两批已经实现：
+前三批当前已经实现：
 
 ```text
 ReviewPipelineService
@@ -546,13 +558,17 @@ Eval only:
 ReviewContext
         → DeterministicReviewPlanner
         → ReviewAgentRegistry
-        → one explicitly selected SpecialistReviewAgent
+        → selected SpecialistReviewAgents (sequential)
+        → DeterministicReviewAggregator
+        → evaluated ReviewReport + execution metadata
 ```
 
-验收要求：现有 Prompt、Provider、Report、数据库和 GitHub 发布行为保持不变，仍只调用一次模型，所有既有测试继续通过，并补充 Agent 边界的单元测试。
+生产链路仍通过一个 General Agent 和 `PassthroughReviewAggregator` 调用一次模型；上面的多 Agent 流程只存在于 Eval，不改变数据库和 GitHub 发布行为。
 
-自动化验收结果为 265 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 96 个源码文件通过。新增验证覆盖未知文件、非法字段、重复 Finding、近似去重、相似但不同问题、标签冲突、空结果、重复角色和输入顺序无关性。
+自动化验收结果为 274 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。新增验证覆盖计划执行顺序、逐 Agent Latency、Usage 汇总、失败角色、已完成结果、聚合指标、CLI 安全门禁和历史 baseline 兼容。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
-下一步把 Planner、Registry、多个专业 Agent 和 Deterministic Aggregator 接入仅供 Eval 使用的 Multi-Agent Runner，并增加混合缺陷、重复 Finding 和标签冲突案例。先记录聚合前后 Finding、Agent Contribution、Duplicate Rate、总 Usage 和延迟，再进入持久化与并发；当前仍不把多个 Agent 的输出接入生产发布链路。
+本批没有运行真实 DeepSeek 多 Agent，也没有生成多 Agent baseline。Mock SQL 注入案例实际选择 Correctness 和 Security，执行两次 Agent，聚合前 2 个 Finding、聚合后 1 个、Duplicate Rate 为 0.5；完整 Seed Mock 产生 16 次 Agent 调用、10/10 Case Pass，并合并 5 个重复 Finding。这些只证明评测 plumbing，不能证明模型质量。
+
+下一步增加混合缺陷、重复 Finding 和标签冲突案例。提交干净代码后，可选择一个低成本案例做显式 DeepSeek 多 Agent partial trial；之后再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。

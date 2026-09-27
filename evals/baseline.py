@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from evals.metrics import EvaluationRun
+from evals.metrics import EvaluationExecutionMode, EvaluationRun
 
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +56,13 @@ def build_model_baseline(evaluation: EvaluationRun) -> ModelBaseline:
         raise BaselineSafetyError("only a DeepSeek live evaluation can become a model baseline")
     if not evaluation.is_model_baseline:
         raise BaselineSafetyError("partial live evaluations cannot become model baselines")
+    if (
+        evaluation.execution_mode != EvaluationExecutionMode.SINGLE_AGENT
+        or evaluation.agent_role is None
+    ):
+        raise BaselineSafetyError(
+            "multi-agent evaluations cannot become model baselines until their schema is stable"
+        )
     if evaluation.executed_case_count != evaluation.dataset_case_count:
         raise BaselineSafetyError("a model baseline must execute the complete dataset")
     if (

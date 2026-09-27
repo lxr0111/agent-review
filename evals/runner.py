@@ -10,8 +10,14 @@ from app.providers.llm.exceptions import LLMConfigurationError
 from app.providers.llm.mock import MockLLMProvider
 from app.providers.llm.protocol import LLMProvider
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
+from app.services.planned_review_orchestrator import PlannedReviewOrchestrator
 from app.services.review_agent import AgentRole, ReviewAgent
 from app.services.review_agent_registry import create_default_agent_registry
+from app.services.review_aggregator import (
+    AGGREGATOR_PROMPT_VERSION,
+    DeterministicReviewAggregator,
+)
+from app.services.review_planner import DeterministicReviewPlanner
 from app.services.specialist_prompt_builder import agent_prompt_version
 from evals.baseline import (
     BaselineSafetyError,
@@ -25,11 +31,13 @@ from evals.baseline import (
 from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.metrics import (
     CaseEvaluation,
+    EvaluationExecutionMode,
     EvaluationRun,
     aggregate_metrics,
     error_case_evaluation,
     successful_case_evaluation,
 )
+from evals.multi_agent import evaluate_multi_agent_case
 from evals.planning import AgentPlanningRun, build_agent_planning_run
 from evals.schemas import EvalCase, EvalDataset, load_dataset
 
@@ -58,6 +66,7 @@ def validate_run_mode(
     allow_dirty: bool = False,
     agent_role: AgentRole = AgentRole.GENERAL,
     plan_only: bool = False,
+    multi_agent: bool = False,
 ) -> None:
     if provider == "mock" and live:
         raise UnsafeEvaluationModeError("--live cannot be used with the mock provider")
@@ -92,6 +101,16 @@ def validate_run_mode(
     if plan_only and agent_role != AgentRole.GENERAL:
         raise UnsafeEvaluationModeError(
             "--plan-only selects roles itself and cannot be combined with --agent-role"
+        )
+    if multi_agent and plan_only:
+        raise UnsafeEvaluationModeError("--multi-agent cannot be combined with --plan-only")
+    if multi_agent and agent_role != AgentRole.GENERAL:
+        raise UnsafeEvaluationModeError(
+            "--multi-agent selects roles itself and cannot be combined with --agent-role"
+        )
+    if multi_agent and save_baseline:
+        raise UnsafeEvaluationModeError(
+            "--multi-agent baseline saving is not supported until its schema is stabilized"
         )
 
 
@@ -162,6 +181,74 @@ def run_live_evaluation(
     )
 
 
+def run_mock_multi_agent_evaluation(
+    dataset: EvalDataset,
+    *,
+    max_cases: int | None = None,
+    case_id: str | None = None,
+) -> EvaluationRun:
+    selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
+    results: list[CaseEvaluation] = []
+    for case in selected_cases:
+        provider = MockLLMProvider(_mock_output(case), model_name="eval-self-test-mock")
+        orchestrator = _create_planned_orchestrator(provider)
+        results.append(evaluate_multi_agent_case(case, orchestrator))
+    cases = tuple(results)
+    return EvaluationRun(
+        run_kind="multi_agent_evaluator_self_test",
+        provider="mock",
+        model_name="eval-self-test-mock",
+        prompt_version=AGGREGATOR_PROMPT_VERSION,
+        execution_mode=EvaluationExecutionMode.PLANNED_MULTI_AGENT,
+        agent_role=None,
+        matcher_version=CURRENT_MATCHER_VERSION,
+        is_model_baseline=False,
+        schema_version=dataset.schema_version,
+        dataset_version=dataset.dataset_version,
+        dataset_case_count=len(dataset.cases),
+        executed_case_count=len(selected_cases),
+        cases=cases,
+        metrics=aggregate_metrics(dataset, cases),
+    )
+
+
+def run_live_multi_agent_evaluation(
+    dataset: EvalDataset,
+    provider: LLMProvider,
+    *,
+    dataset_digest: str,
+    git_state: GitState,
+    max_cases: int | None = None,
+    case_id: str | None = None,
+    executed_at: datetime | None = None,
+) -> EvaluationRun:
+    selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
+    orchestrator = _create_planned_orchestrator(provider)
+    cases = tuple(
+        evaluate_multi_agent_case(case, orchestrator) for case in selected_cases
+    )
+    return EvaluationRun(
+        run_kind="multi_agent_live_evaluation",
+        provider="deepseek",
+        model_name=provider.model_name,
+        prompt_version=AGGREGATOR_PROMPT_VERSION,
+        execution_mode=EvaluationExecutionMode.PLANNED_MULTI_AGENT,
+        agent_role=None,
+        matcher_version=CURRENT_MATCHER_VERSION,
+        is_model_baseline=False,
+        schema_version=dataset.schema_version,
+        dataset_version=dataset.dataset_version,
+        dataset_sha256=dataset_digest,
+        dataset_case_count=len(dataset.cases),
+        executed_case_count=len(selected_cases),
+        git_commit=git_state.commit,
+        git_dirty=git_state.dirty,
+        executed_at=executed_at or datetime.now(UTC),
+        cases=cases,
+        metrics=aggregate_metrics(dataset, cases),
+    )
+
+
 def evaluate_case(case: EvalCase, provider: LLMProvider) -> CaseEvaluation:
     agent = create_default_agent_registry(provider).get(AgentRole.GENERAL)
     return evaluate_agent_case(case, agent)
@@ -197,6 +284,14 @@ def run_agent_planning(
 ) -> AgentPlanningRun:
     selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
     return build_agent_planning_run(dataset, selected_cases)
+
+
+def _create_planned_orchestrator(provider: LLMProvider) -> PlannedReviewOrchestrator:
+    return PlannedReviewOrchestrator(
+        planner=DeterministicReviewPlanner(),
+        registry=create_default_agent_registry(provider),
+        aggregator=DeterministicReviewAggregator(),
+    )
 
 
 def _mock_output(case: EvalCase) -> LLMReviewOutput:
@@ -271,6 +366,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         default=AgentRole.GENERAL.value,
     )
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--multi-agent", action="store_true")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--max-cases", type=_positive_integer)
     selection.add_argument("--case-id")
@@ -295,6 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_dirty=args.allow_dirty,
             agent_role=agent_role,
             plan_only=args.plan_only,
+            multi_agent=args.multi_agent,
         )
     except UnsafeEvaluationModeError as error:
         parser.error(str(error))
@@ -320,12 +417,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.provider == "mock":
-        result = run_mock_evaluation(
-            dataset,
-            max_cases=args.max_cases,
-            case_id=args.case_id,
-            agent_role=agent_role,
-        )
+        if args.multi_agent:
+            result = run_mock_multi_agent_evaluation(
+                dataset,
+                max_cases=args.max_cases,
+                case_id=args.case_id,
+            )
+        else:
+            result = run_mock_evaluation(
+                dataset,
+                max_cases=args.max_cases,
+                case_id=args.case_id,
+                agent_role=agent_role,
+            )
         print(result.model_dump_json(indent=2))
         return 0
 
@@ -338,15 +442,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         provider = _create_deepseek_provider()
         with provider:
-            result = run_live_evaluation(
-                dataset,
-                provider,
-                dataset_digest=dataset_sha256(dataset_path),
-                git_state=git_state,
-                max_cases=args.max_cases,
-                case_id=args.case_id,
-                agent_role=agent_role,
-            )
+            if args.multi_agent:
+                result = run_live_multi_agent_evaluation(
+                    dataset,
+                    provider,
+                    dataset_digest=dataset_sha256(dataset_path),
+                    git_state=git_state,
+                    max_cases=args.max_cases,
+                    case_id=args.case_id,
+                )
+            else:
+                result = run_live_evaluation(
+                    dataset,
+                    provider,
+                    dataset_digest=dataset_sha256(dataset_path),
+                    git_state=git_state,
+                    max_cases=args.max_cases,
+                    case_id=args.case_id,
+                    agent_role=agent_role,
+                )
         if args.save_baseline:
             baseline = build_model_baseline(result)
             baseline_path = args.baseline_output or default_baseline_path(result)

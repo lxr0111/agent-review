@@ -88,6 +88,33 @@ python -m evals.runner
 The default command does not load application settings and does not access the network,
 database, GitHub, or a paid model. Supplying a non-mock provider without `--live` is rejected.
 
+Run the complete Planner -> specialist agents -> deterministic aggregator path with the offline
+mock provider:
+
+```powershell
+python -m evals.runner --multi-agent --case-id security-sql-injection
+```
+
+This mode records planned roles and reasons, per-agent prompt versions, latency, findings and
+usage, plus pre/post-aggregation finding counts, duplicate rate, conflicts and agent
+contributions. Mock usage remains `null`; this command is a plumbing self-test, not model-quality
+evidence. `--multi-agent` cannot be combined with `--agent-role`, `--plan-only`, or
+`--save-baseline`.
+
+A real multi-agent partial trial requires all explicit safety flags:
+
+```powershell
+python -m evals.runner `
+  --provider deepseek `
+  --live `
+  --multi-agent `
+  --case-id security-sql-injection
+```
+
+Multi-agent baseline saving remains disabled until the execution and recovery schema is stable.
+The live path is sequential in this version, never accesses the database or GitHub, and is not
+used by the production worker.
+
 Run one paid DeepSeek case as a guarded trial:
 
 ```powershell

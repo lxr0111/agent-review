@@ -53,6 +53,10 @@ def test_successful_case_scores_category_and_severity_after_matching() -> None:
     assert result.category_match_count == 0
     assert result.severity_match_count == 0
     assert result.case_pass is False
+    assert result.agent_executions == ()
+    assert result.pre_aggregation_finding_count == 0
+    assert result.post_aggregation_finding_count == 0
+    assert result.duplicate_rate is None
 
 
 def test_error_classification_distinguishes_required_outcomes() -> None:
@@ -119,3 +123,7 @@ def test_aggregate_metrics_include_case_pass_rate_and_null_usage() -> None:
     assert metrics.usage.output_tokens is None
     assert metrics.usage.total_tokens is None
     assert metrics.usage.cost_usd is None
+    assert metrics.total_agent_calls == 0
+    assert metrics.pre_aggregation_findings == 0
+    assert metrics.post_aggregation_findings == 0
+    assert metrics.duplicate_rate is None

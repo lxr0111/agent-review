@@ -13,7 +13,7 @@ from evals.baseline import (
     save_model_baseline,
 )
 from evals.matcher import MatcherVersion
-from evals.metrics import EvaluationRun
+from evals.metrics import EvaluationExecutionMode, EvaluationRun
 from evals.runner import run_mock_evaluation
 from evals.schemas import load_dataset
 
@@ -47,6 +47,15 @@ def test_model_baseline_requires_full_deepseek_live_run() -> None:
     )
     with pytest.raises(BaselineSafetyError, match="partial"):
         build_model_baseline(partial)
+
+    multi_agent = _live_evaluation().model_copy(
+        update={
+            "execution_mode": EvaluationExecutionMode.PLANNED_MULTI_AGENT,
+            "agent_role": None,
+        }
+    )
+    with pytest.raises(BaselineSafetyError, match="multi-agent"):
+        build_model_baseline(multi_agent)
 
 
 def test_baseline_contains_reproducibility_metadata_without_source_patches() -> None:

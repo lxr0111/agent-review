@@ -15,6 +15,7 @@ from app.domain.review.report import (
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
 from app.providers.llm.protocol import LLMTokenUsage
 from app.services.review_agent import AgentRole
+from app.services.review_finding_validator import ReviewFindingValidationError
 from evals.matcher import (
     CURRENT_MATCHER_VERSION,
     LEGACY_MATCHER_VERSION,
@@ -32,6 +33,11 @@ class EvaluationOutcome(StrEnum):
     SUCCESSFUL_CASE = "successful_case"
 
 
+class EvaluationExecutionMode(StrEnum):
+    SINGLE_AGENT = "single_agent"
+    PLANNED_MULTI_AGENT = "planned_multi_agent"
+
+
 class EvalUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +45,35 @@ class EvalUsage(BaseModel):
     output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     cost_usd: float | None = Field(default=None, ge=0)
+
+
+class PlannedAgentEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    reasons: tuple[str, ...] = Field(min_length=1)
+
+
+class AgentExecutionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    prompt_version: str
+    outcome: EvaluationOutcome
+    latency_ms: float = Field(ge=0)
+    finding_count: int = Field(ge=0)
+    usage: EvalUsage = Field(default_factory=EvalUsage)
+    error_type: str | None = None
+
+
+class AgentContributionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    raw_finding_count: int = Field(ge=0)
+    kept_finding_count: int = Field(ge=0)
+    merged_finding_count: int = Field(ge=0)
+    unique_finding_count: int = Field(ge=0)
 
 
 class FindingMatchDetail(BaseModel):
@@ -83,7 +118,16 @@ class CaseEvaluation(BaseModel):
     summary: str | None = None
     model_name: str | None = None
     prompt_version: str | None = None
-    agent_role: AgentRole = AgentRole.GENERAL
+    execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SINGLE_AGENT
+    agent_role: AgentRole | None = AgentRole.GENERAL
+    planned_agents: tuple[PlannedAgentEvaluation, ...] = ()
+    agent_executions: tuple[AgentExecutionEvaluation, ...] = ()
+    pre_aggregation_finding_count: int = Field(default=0, ge=0)
+    post_aggregation_finding_count: int = Field(default=0, ge=0)
+    merged_finding_count: int = Field(default=0, ge=0)
+    aggregation_conflict_count: int = Field(default=0, ge=0)
+    duplicate_rate: float | None = Field(default=None, ge=0, le=1)
+    agent_contributions: tuple[AgentContributionEvaluation, ...] = ()
     actual_findings: tuple[EvaluatedFinding, ...] = ()
     matches: tuple[FindingMatchDetail, ...] = ()
     error_type: str | None = None
@@ -113,6 +157,13 @@ class AggregateMetrics(BaseModel):
     latency_p50_ms: float | None = Field(default=None, ge=0)
     latency_p95_ms: float | None = Field(default=None, ge=0)
     usage: EvalUsage
+    total_agent_calls: int = Field(default=0, ge=0)
+    pre_aggregation_findings: int = Field(default=0, ge=0)
+    post_aggregation_findings: int = Field(default=0, ge=0)
+    merged_findings: int = Field(default=0, ge=0)
+    aggregation_conflicts: int = Field(default=0, ge=0)
+    duplicate_rate: float | None = Field(default=None, ge=0, le=1)
+    agent_contributions: tuple[AgentContributionEvaluation, ...] = ()
 
 
 class EvaluationRun(BaseModel):
@@ -122,7 +173,8 @@ class EvaluationRun(BaseModel):
     provider: str
     model_name: str | None
     prompt_version: str
-    agent_role: AgentRole = AgentRole.GENERAL
+    execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SINGLE_AGENT
+    agent_role: AgentRole | None = AgentRole.GENERAL
     matcher_version: MatcherVersion = LEGACY_MATCHER_VERSION
     is_model_baseline: bool
     schema_version: str
@@ -144,7 +196,14 @@ def successful_case_evaluation(
     latency_ms: float,
     usage: LLMTokenUsage | None = None,
     matcher_version: MatcherVersion = CURRENT_MATCHER_VERSION,
-    agent_role: AgentRole = AgentRole.GENERAL,
+    agent_role: AgentRole | None = AgentRole.GENERAL,
+    execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SINGLE_AGENT,
+    planned_agents: tuple[PlannedAgentEvaluation, ...] = (),
+    agent_executions: tuple[AgentExecutionEvaluation, ...] = (),
+    pre_aggregation_finding_count: int = 0,
+    merged_finding_count: int = 0,
+    aggregation_conflict_count: int = 0,
+    agent_contributions: tuple[AgentContributionEvaluation, ...] = (),
 ) -> CaseEvaluation:
     result, details, category_matches, severity_matches = _score_findings(
         case,
@@ -173,7 +232,24 @@ def successful_case_evaluation(
         summary=report.summary,
         model_name=report.model_name,
         prompt_version=report.prompt_version,
+        execution_mode=execution_mode,
         agent_role=agent_role,
+        planned_agents=planned_agents,
+        agent_executions=agent_executions,
+        pre_aggregation_finding_count=pre_aggregation_finding_count,
+        post_aggregation_finding_count=(
+            len(report.findings)
+            if execution_mode == EvaluationExecutionMode.PLANNED_MULTI_AGENT
+            else 0
+        ),
+        merged_finding_count=merged_finding_count,
+        aggregation_conflict_count=aggregation_conflict_count,
+        duplicate_rate=(
+            _ratio(merged_finding_count, pre_aggregation_finding_count)
+            if execution_mode == EvaluationExecutionMode.PLANNED_MULTI_AGENT
+            else None
+        ),
+        agent_contributions=agent_contributions,
         actual_findings=tuple(
             EvaluatedFinding(
                 title=finding.title,
@@ -279,7 +355,10 @@ def error_case_evaluation(
     error: Exception,
     *,
     latency_ms: float,
-    agent_role: AgentRole = AgentRole.GENERAL,
+    agent_role: AgentRole | None = AgentRole.GENERAL,
+    execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SINGLE_AGENT,
+    planned_agents: tuple[PlannedAgentEvaluation, ...] = (),
+    agent_executions: tuple[AgentExecutionEvaluation, ...] = (),
 ) -> CaseEvaluation:
     outcome = classify_error(error)
     return CaseEvaluation(
@@ -296,7 +375,10 @@ def error_case_evaluation(
         severity_match_count=0,
         case_pass=False,
         error_type=type(error).__name__,
+        execution_mode=execution_mode,
         agent_role=agent_role,
+        planned_agents=planned_agents,
+        agent_executions=agent_executions,
         usage=EvalUsage(),
     )
 
@@ -306,7 +388,15 @@ def classify_error(error: Exception) -> EvaluationOutcome:
         return EvaluationOutcome.TRANSPORT_ERROR
     if isinstance(error, LLMTransientError) and error.status_code is None:
         return EvaluationOutcome.TRANSPORT_ERROR
-    if isinstance(error, (LLMOutputError, ReviewOutputValidationError, ValidationError)):
+    if isinstance(
+        error,
+        (
+            LLMOutputError,
+            ReviewOutputValidationError,
+            ReviewFindingValidationError,
+            ValidationError,
+        ),
+    ):
         return EvaluationOutcome.SCHEMA_ERROR
     if isinstance(error, LLMProviderError):
         return EvaluationOutcome.PROVIDER_ERROR
@@ -328,6 +418,8 @@ def aggregate_metrics(
     latencies = sorted(case.latency_ms for case in cases)
     negative_case_ids = {case.id for case in dataset.cases if case.is_negative}
 
+    merged_findings = sum(case.merged_finding_count for case in cases)
+    pre_aggregation_findings = sum(case.pre_aggregation_finding_count for case in cases)
     return AggregateMetrics(
         total_cases=total_cases,
         successful_cases=successful_cases,
@@ -357,6 +449,17 @@ def aggregate_metrics(
         latency_p50_ms=_percentile(latencies, 0.50),
         latency_p95_ms=_percentile(latencies, 0.95),
         usage=_aggregate_usage(cases),
+        total_agent_calls=sum(len(case.agent_executions) for case in cases),
+        pre_aggregation_findings=pre_aggregation_findings,
+        post_aggregation_findings=sum(
+            case.post_aggregation_finding_count for case in cases
+        ),
+        merged_findings=merged_findings,
+        aggregation_conflicts=sum(
+            case.aggregation_conflict_count for case in cases
+        ),
+        duplicate_rate=_ratio(merged_findings, pre_aggregation_findings),
+        agent_contributions=_aggregate_agent_contributions(cases),
     )
 
 
@@ -377,6 +480,29 @@ def _aggregate_usage(cases: tuple[CaseEvaluation, ...]) -> EvalUsage:
         output_tokens=_sum_if_complete([case.usage.output_tokens for case in cases]),
         total_tokens=_sum_if_complete([case.usage.total_tokens for case in cases]),
         cost_usd=_sum_float_if_complete([case.usage.cost_usd for case in cases]),
+    )
+
+
+def _aggregate_agent_contributions(
+    cases: tuple[CaseEvaluation, ...],
+) -> tuple[AgentContributionEvaluation, ...]:
+    totals: dict[AgentRole, list[int]] = {}
+    for case in cases:
+        for contribution in case.agent_contributions:
+            counts = totals.setdefault(contribution.role, [0, 0, 0, 0])
+            counts[0] += contribution.raw_finding_count
+            counts[1] += contribution.kept_finding_count
+            counts[2] += contribution.merged_finding_count
+            counts[3] += contribution.unique_finding_count
+    return tuple(
+        AgentContributionEvaluation(
+            role=role,
+            raw_finding_count=counts[0],
+            kept_finding_count=counts[1],
+            merged_finding_count=counts[2],
+            unique_finding_count=counts[3],
+        )
+        for role, counts in sorted(totals.items(), key=lambda item: item[0].value)
     )
 
 

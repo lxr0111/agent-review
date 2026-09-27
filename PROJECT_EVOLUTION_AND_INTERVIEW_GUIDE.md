@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
-> 最后更新：2026-09-26
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到多 Agent Validator 与确定性 Aggregator 第一批完成。
+> 最后更新：2026-09-27
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Eval-only Planned Multi-Agent Runner 完成。
 
 ## 1. 这份文档的用途
 
@@ -1898,16 +1898,152 @@ mypy app evals: passed (96 source files)
 
 - 文本身份是保守的词法启发式，还不是 AST、Embedding 或行范围匹配；
 - 当前审计元数据尚未持久化；
-- Aggregator 尚未接入 Eval 多 Agent Runner；
+- Aggregator 已接入 Eval 多 Agent Runner，但尚无真实模型多 Agent 结果；
 - 尚未测试多个 Agent 对复杂、混合缺陷 PR 的真实输出；
 - 尚未实现部分 Agent 失败、并发、预算和 Agent 级恢复；
 - 生产仍使用 `PassthroughReviewAggregator`。
 
 ---
 
+### 3.22 Eval-only Planned Multi-Agent Runner
+
+#### 要解决的问题
+
+上一批已经能合并多个 Agent Result，但 Planner、Registry、专业 Agent 和 Aggregator 仍是分散组件。系统还不能在同一个评测案例里回答：
+
+- Planner 实际选择了哪些角色；
+- 每个 Agent 的 Prompt、Latency、Finding 和 Usage 是什么；
+- 聚合前后减少了多少重复 Finding；
+- 哪个 Agent 的结果被保留、合并，或者提供了独有贡献；
+- 某个 Agent 失败时，已完成的执行是否仍可观测。
+
+本批把这些组件串成完整的 Eval-only 多 Agent 链路，同时保持生产 Worker 不变。
+
+#### 计划驱动 Orchestrator
+
+新增 `PlannedReviewOrchestrator`：
+
+```text
+ReviewContext
+    -> DeterministicReviewPlanner
+    -> ReviewAgentRegistry
+    -> selected Specialist Agents (sequential)
+    -> DeterministicReviewAggregator
+    -> PlannedReviewResult
+```
+
+`PlannedReviewResult` 保留 Plan、每个 Agent Execution 和 Aggregation 审计结果。每个 Execution 记录 Role、真实 Prompt Version、Agent Result 和独立 Latency。
+
+第一版故意顺序执行，而不是直接并行：先固定角色选择、错误边界、Usage 累加和聚合指标，后续才能用相同口径判断并行是否真的降低墙钟时间。
+
+Agent 调用失败会抛出 `PlannedAgentExecutionError`，其中包含失败 Role、Prompt Version、失败 Latency 和已经完成的 Agent Execution。聚合失败则使用 `PlannedReviewAggregationError` 保留全部已完成执行。Eval 可以记录失败点，但不会把不完整结果伪装成成功 Report。
+
+#### Eval 模式与安全门禁
+
+新增默认无网络命令：
+
+```powershell
+python -m evals.runner --multi-agent --case-id security-sql-injection
+```
+
+它使用 Mock，仅用于验证 Planner、Agent、Aggregator 和 Metrics plumbing，不是模型质量证据。
+
+真实模型仍需要三个显式条件：
+
+```powershell
+python -m evals.runner --provider deepseek --live --multi-agent `
+  --case-id security-sql-injection
+```
+
+安全规则：
+
+- `--multi-agent` 与 `--agent-role`、`--plan-only` 互斥；
+- Mock 模式不加载 Settings、不创建真实 Provider、不读取真实 API Key；
+- 多 Agent 实验暂时禁止 `--save-baseline`；
+- 未知 Case 仍在 Git 状态和 Provider 创建之前失败；
+- Live 多 Agent 即使执行完整数据集也标记 `is_model_baseline=false`。
+
+#### 新增可观测指标
+
+评测结果新增向后兼容的 `execution_mode`。历史 JSON 缺失该字段时默认解释为 `single_agent`；多 Agent 使用 `planned_multi_agent`，顶层和 Case 的 `agent_role` 为 `null`，避免伪装成 General Agent。
+
+每个多 Agent Case 记录：
+
+- `planned_agents` 与 Planner reasons；
+- `agent_executions`：Role、Prompt、Outcome、Latency、Finding Count、Usage、Error Type；
+- `pre_aggregation_finding_count` 与 `post_aggregation_finding_count`；
+- `merged_finding_count`、`aggregation_conflict_count` 和 `duplicate_rate`；
+- 每个角色的 raw、kept、merged 和 unique contribution。
+
+Run 级 Metrics 对 Agent Calls、Finding、Conflict、Contribution 和 Usage 做汇总。只有所有 Agent 都返回 Usage 时才计算 Case 总 Token；Mock 或不完整 Usage 保持 `null`，不会伪造成本。
+
+#### Mock 完整链路实测
+
+对 `security-sql-injection` 执行无网络多 Agent 命令，得到：
+
+```text
+planned roles: correctness, security
+total agent calls: 2
+pre-aggregation findings: 2
+post-aggregation findings: 1
+merged findings: 1
+duplicate rate: 0.5
+case pass: true
+usage: null
+```
+
+Mock 为两个 Agent 生成同一个期望 Finding。Aggregator 选择职责匹配的 Security 结果，合并 Correctness 的重复结果。该结果证明完整评测 plumbing 和贡献统计正确，不证明真实模型也会产生相同质量。
+
+完整 `seed-v1` Mock 自测中，Planner 产生 16 次 Agent 调用，10/10 Case Pass，Aggregator 合并 5 个重复 Finding，False Positive 为 0。
+
+#### 自动化验证证据
+
+新增测试覆盖：
+
+- Planner 选择的角色按固定顺序从 Registry 执行；
+- 每个 Agent Latency 和完成结果被保留；
+- Agent 失败保留已完成执行和失败 Role；
+- Aggregation 失败保留全部 Agent Execution；
+- Mock 多 Agent 链路执行 Correctness + Security 并完成去重；
+- Live-shaped Provider 的多 Agent Token Usage 正确相加；
+- 单 Agent 失败被分类为对应 Transport/Provider/Schema Outcome；
+- Run 级 Agent Calls、Duplicate Rate 和 Contribution 正确汇总；
+- CLI 互斥门禁与 baseline 禁止规则；
+- 默认 Mock 不创建真实 Provider 或读取 Git 状态；
+- 历史单 Agent Baseline、Comparator 和 Rescore 保持兼容。
+
+验证结果：
+
+```text
+Targeted tests: 43 passed
+All tests: 274 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (98 source files)
+Mock multi-agent CLI: passed
+```
+
+#### 真实集成证据
+
+本批没有调用真实 DeepSeek、没有发布 GitHub Review，也没有生成多 Agent baseline。当前只有 Mock 完整链路和此前单专业 Agent 的真实 partial trial；不能据此声称多 Agent 提升了 Recall、Precision 或延迟。
+
+#### 面试怎么讲
+
+> 我没有把多 Agent 直接切进生产，而是先做 Eval-only 编排器。Planner 选择角色后顺序执行专业 Agent，再通过确定性 Aggregator 去重；评测结果同时保留每个 Agent 的 Prompt、Latency、Token、原始 Finding 和贡献。Mock 的 SQL 注入案例会调用 Correctness 与 Security 两次，聚合前两个 Finding、聚合后一个，重复率 50%。Mock 只验证链路，不代表模型质量；真实多 Agent baseline 在 Schema 和恢复策略稳定前也被代码明确禁止保存。
+
+#### 当前限制
+
+- 多 Agent 仍是顺序执行，尚未实现并发；
+- 任一 Agent 失败会让 Case 失败，尚未定义生产 `PARTIAL` 策略；
+- Agent Execution 与 Aggregation 审计尚未持久化；
+- 现有 Seed 是开发集，Mock 输出由 Expected Findings 生成；
+- 尚无新的混合缺陷数据集或真实 DeepSeek 多 Agent 结果；
+- 生产仍是单 General Agent 和 `PassthroughReviewAggregator`。
+
+---
+
 ## 4. 当前能力快照
 
-截至 2026-09-26，系统已经具备：
+截至 2026-09-27，系统已经具备：
 
 ### 4.1 主链路
 
@@ -1944,6 +2080,8 @@ mypy app evals: passed (96 source files)
 - 显式开启的 DeepSeek Live Eval；
 - 带 Git/Dataset/Prompt/Model 元数据的可复现 baseline；
 - 校验 Dataset 身份并输出指标和逐案例差异的离线 Comparator；
+- Eval-only Planner 多 Agent 完整编排；
+- Agent 调用数、聚合前后 Finding、Duplicate Rate、Conflict 和 Contribution 指标；
 - 具备证据约束、测试降噪和明确 Severity Rubric 的版本化 Prompt v2；
 - 在相同 `seed-v1` 上保存并比较 `review-v1` 与 `review-v2` 的真实 DeepSeek baseline；
 - 用 SHA-256、ID/Patch 隔离和覆盖测试冻结的 `holdout-v1` 泛化验证集；
@@ -2111,14 +2249,15 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | 专业 Agent 与 Planner | 245 | 四类专业 Prompt、Registry、确定性路由、Agent 元数据、Eval 隔离运行和历史 baseline 兼容 |
 | Planner 误选修复 | 246 | 区分重复数据与重复代码，增加负向路由断言并将 Seed 候选调用从 17 降到 16 |
 | Validator 与确定性 Aggregator | 265 | 聚合边界验证、Finding 身份、跨 Agent 去重、标签冲突审计和输入顺序无关性 |
+| Eval-only Planned Multi-Agent Runner | 274 | Planner/Registry/Agent/Aggregator 串联、执行级指标、贡献统计、失败角色与安全门禁 |
 
 当前最近一次结果：
 
 ```text
-Targeted tests: 24 passed
-All tests: 265 passed, 2 third-party deprecation warnings
+Targeted tests: 43 passed
+All tests: 274 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (96 source files)
+mypy app evals: passed (98 source files)
 git diff --check: passed
 ```
 
@@ -2150,11 +2289,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 把 Planner、Registry、多个专业 Agent 和 Deterministic Aggregator 接入仅供 Eval 使用的 Multi-Agent Runner；
-2. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
-3. 记录聚合前后 Finding、Agent Contribution、Duplicate Rate、总 Usage 和墙钟时间；
-4. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 方案；
-5. 再进入 Agent 级持久化恢复、并发上限和 Token Budget，满足门槛后才考虑生产切换。
+1. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
+2. 提交当前干净代码后，选择一个低成本案例做显式 DeepSeek 多 Agent partial trial；
+3. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 的质量、Token 和顺序执行延迟；
+4. 设计 Agent Execution 持久化、已成功结果复用和明确的 `PARTIAL` 策略；
+5. 再实现并发上限、Token Budget 和 Rate Limit，满足门槛后才考虑生产切换。
 
 ### 9.2 后续能力
 

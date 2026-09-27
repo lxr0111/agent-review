@@ -197,6 +197,32 @@ def test_plan_only_rejects_live_baseline_and_explicit_agent_selection() -> None:
         )
 
 
+def test_multi_agent_mode_rejects_conflicting_modes_and_baseline_save() -> None:
+    with pytest.raises(UnsafeEvaluationModeError, match="plan-only"):
+        validate_run_mode(
+            provider="mock",
+            live=False,
+            multi_agent=True,
+            plan_only=True,
+        )
+
+    with pytest.raises(UnsafeEvaluationModeError, match="selects roles itself"):
+        validate_run_mode(
+            provider="mock",
+            live=False,
+            multi_agent=True,
+            agent_role=AgentRole.SECURITY,
+        )
+
+    with pytest.raises(UnsafeEvaluationModeError, match="schema is stabilized"):
+        validate_run_mode(
+            provider="deepseek",
+            live=True,
+            multi_agent=True,
+            save_baseline=True,
+        )
+
+
 def test_baseline_output_and_allow_dirty_require_save_flag() -> None:
     with pytest.raises(UnsafeEvaluationModeError, match="baseline-output"):
         validate_run_mode(
@@ -329,6 +355,31 @@ def test_default_cli_ignores_real_provider_environment(monkeypatch, capsys) -> N
     assert payload["provider"] == "mock"
     assert payload["is_model_baseline"] is False
     assert payload["metrics"]["total_cases"] == 10
+
+
+def test_mock_multi_agent_cli_does_not_create_real_provider(monkeypatch, capsys) -> None:
+    provider_factory = Mock()
+    git_state_collector = Mock()
+    monkeypatch.setattr("evals.runner._create_deepseek_provider", provider_factory)
+    monkeypatch.setattr("evals.runner.collect_git_state", git_state_collector)
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(DATASET_PATH),
+            "--multi-agent",
+            "--case-id",
+            "security-sql-injection",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["run_kind"] == "multi_agent_evaluator_self_test"
+    assert payload["agent_role"] is None
+    assert payload["metrics"]["total_agent_calls"] == 2
+    provider_factory.assert_not_called()
+    git_state_collector.assert_not_called()
 
 
 def test_mock_cli_selects_exact_case_and_reports_unknown_case_cleanly(capsys) -> None:
