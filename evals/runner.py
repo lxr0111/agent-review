@@ -17,6 +17,7 @@ from app.services.review_aggregator import (
     AGGREGATOR_PROMPT_VERSION,
     DeterministicReviewAggregator,
 )
+from app.services.review_finding_identity import FINDING_IDENTITY_VERSION
 from app.services.review_planner import DeterministicReviewPlanner
 from app.services.specialist_prompt_builder import agent_prompt_version
 from evals.baseline import (
@@ -201,6 +202,7 @@ def run_mock_multi_agent_evaluation(
         prompt_version=AGGREGATOR_PROMPT_VERSION,
         execution_mode=EvaluationExecutionMode.PLANNED_MULTI_AGENT,
         agent_role=None,
+        finding_identity_version=FINDING_IDENTITY_VERSION,
         matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=False,
         schema_version=dataset.schema_version,
@@ -234,6 +236,7 @@ def run_live_multi_agent_evaluation(
         prompt_version=AGGREGATOR_PROMPT_VERSION,
         execution_mode=EvaluationExecutionMode.PLANNED_MULTI_AGENT,
         agent_role=None,
+        finding_identity_version=FINDING_IDENTITY_VERSION,
         matcher_version=CURRENT_MATCHER_VERSION,
         is_model_baseline=False,
         schema_version=dataset.schema_version,

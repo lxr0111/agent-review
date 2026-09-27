@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-27
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Eval-only Planned Multi-Agent Runner 完成。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到真实多 Agent 去重缺陷与 Finding Identity v2 修复完成。
 
 ## 1. 这份文档的用途
 
@@ -2041,6 +2041,104 @@ Mock multi-agent CLI: passed
 
 ---
 
+### 3.23 真实多 Agent 去重缺陷与 Finding Identity v2
+
+#### 真实试跑发现的问题
+
+在提交 `e6f43d0` 后，对 `security-sql-injection` 执行了第一次真实 DeepSeek 多 Agent partial trial。Planner 正确选择 Correctness 和 Security，两个 Agent 都成功返回一个合法 Finding：
+
+```text
+Correctness: 1906 Tokens, 4456 ms, 1 Finding
+Security:    1514 Tokens, 2836 ms, 1 Finding
+Total:       3420 Tokens, 7293 ms
+```
+
+两个 Finding 引用同一个文件、同一段 SQL f-string、同一个直接插值根因，也都建议参数化查询。Correctness 额外说明合法邮箱包含单引号时查询也会损坏，但这不是另一个独立根因。
+
+实际聚合结果却是：
+
+```text
+pre-aggregation findings: 2
+post-aggregation findings: 2
+merged findings: 0
+duplicate rate: 0.0
+false positives: 1
+case pass: false
+```
+
+因此这里的 False Positive 主要是 Aggregator 的漏合并，不是模型生成了无关问题。这个结果也说明 Mock 使用相同 Expected Finding 文本，只验证了完全相同或高度相似的输出，不能覆盖真实模型的同义改写。
+
+#### 根因
+
+Finding Identity v1 要求：
+
+- Title token containment 至少 `0.75`；
+- Title + Explanation token containment 至少 `0.65`。
+
+真实标题分别使用 `broken lookups / interpolation / email` 和 `interpolated query / find_user`。虽然语义相同，标题词面重叠不足，旧规则在检查共同代码证据前就判定为不同问题。
+
+#### Finding Identity v2
+
+新增版本常量：
+
+```text
+finding_identity_version: finding-text-v2
+```
+
+v2 保留原有高阈值词法路径，同时增加一条保守的真实模型同义改写路径：
+
+1. 文件路径必须相同；
+2. 两个标题至少共享两个非通用信号词；
+3. 两个标题至少共享一个连续的非通用 bigram，例如 `sql injection`；
+4. 两个 Explanation 必须引用同一个长度足够的 Markdown code span。
+
+只有四项同时满足才合并。Category、Severity 和 Confidence 仍不参与身份判断，避免隐藏标签冲突。Suggestion 中常见的“使用参数化查询”也不作为共同代码证据，避免两个不同 SQL 入口因为修复建议相似而被误合并。
+
+新增负向回归确保：即使两个 Finding 引用同一段 SQL，如果一个报告 SQL 注入、另一个报告缺少索引，也不能合并。原有“email 注入”和“sort column 注入”不同入口测试继续保留。
+
+Identity Version 同时写入 `ReviewAggregationResult` 和多 Agent `EvaluationRun`。历史单 Agent baseline 缺少该字段时默认 `null`，不需要重写历史文件。
+
+#### 自动化验证证据
+
+新增或加强的测试覆盖：
+
+- 第一次真实试跑的两个标题和共同 SQL code span 可以合并；
+- Aggregator 最终保留职责匹配且 Confidence 更高的 Security Finding；
+- 同一代码片段的 SQL 注入与缺少索引不能合并；
+- 不同 SQL 注入入口不能合并；
+- 多 Agent Run 输出 `finding-text-v2`；
+- 历史 baseline 的 Identity Version 保持 `null`。
+
+验证结果：
+
+```text
+Targeted tests: 24 passed
+All tests: 277 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (98 source files)
+Mock multi-agent CLI: passed
+```
+
+#### 真实集成证据
+
+修复前的真实 DeepSeek partial trial 绑定 Git commit `e6f43d0` 和固定 Seed SHA，两个 Agent 与 Usage 通道均成功。工作区因个人文档显示 dirty，因此不是 baseline。该次运行证明真实多 Agent 执行链路可用，同时证明 Identity v1 会漏合并这组同根因输出。
+
+Identity v2 当前只有自动化回归和 Mock CLI 证据，尚未重新调用 DeepSeek；不能把预期的 `2 -> 1` 合并写成已经完成的真实结果。
+
+#### 面试怎么讲
+
+> 第一次真实多 Agent 试跑里，Correctness 和 Security 都正确发现了同一个 SQL 插值问题，但模型使用不同措辞，导致词法去重漏合并，评测器把第二条算成误报。我没有去调低一个全局相似度阈值，而是增加了保守的证据路径：同文件、共同根因 bigram、至少两个信号词，并且 Explanation 引用同一代码片段才合并。同时加了“同一 SQL 代码上的注入与缺少索引不能合并”的负例。这样修复的是同根因识别，同时控制过度合并风险。
+
+#### 当前限制
+
+- v2 依赖模型在 Explanation 中使用 Markdown code span；没有共同代码引用的深度同义改写仍可能漏配；
+- bigram 与信号词仍是词法启发式，不是 AST 或语义 Embedding；
+- Identity v2 尚未完成真实 DeepSeek 重跑；
+- 当前试跑是已见 Seed 单案例，不能证明泛化质量；
+- 多 Agent 仍为顺序执行，3420 Tokens 和 7.29 秒只是一条观测，不是稳定成本或延迟结论。
+
+---
+
 ## 4. 当前能力快照
 
 截至 2026-09-27，系统已经具备：
@@ -2250,12 +2348,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Planner 误选修复 | 246 | 区分重复数据与重复代码，增加负向路由断言并将 Seed 候选调用从 17 降到 16 |
 | Validator 与确定性 Aggregator | 265 | 聚合边界验证、Finding 身份、跨 Agent 去重、标签冲突审计和输入顺序无关性 |
 | Eval-only Planned Multi-Agent Runner | 274 | Planner/Registry/Agent/Aggregator 串联、执行级指标、贡献统计、失败角色与安全门禁 |
+| Finding Identity v2 | 277 | 用真实多 Agent 同义输出构建回归，共同根因与代码证据去重，并保留不同问题负例 |
 
 当前最近一次结果：
 
 ```text
-Targeted tests: 43 passed
-All tests: 274 passed, 2 third-party deprecation warnings
+Targeted tests: 24 passed
+All tests: 277 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (98 source files)
 git diff --check: passed
@@ -2282,6 +2381,8 @@ git diff --check: passed
 - `holdout-v2` 修复后的路径 containment negative case 已完成真实 DeepSeek 精确试跑，Schema 合法、0 Findings、0 False Positives、Case Pass 通过，总计 2752 Tokens；该结果是 dirty-worktree partial trial，不是 Model Baseline。
 - 四个专业 Agent 已完成 6 次真实 DeepSeek 单案例 partial trial：四个正例全部命中、两个负例均为 0 Finding，6/6 Case Pass、0 False Positive、Schema 全部合法；总计 8539 Tokens。
 - 相同 6 个案例的 General v2 使用 8205 Tokens；专业单角色试跑多使用 334 Tokens（约 4.1%），质量指标在这些简单已见案例上相同。该比较不等于 Planner 实际多 Agent 总成本，也不构成泛化质量结论。
+- 第一次真实 DeepSeek 多 Agent SQL 注入 partial trial 绑定 commit `e6f43d0`：Correctness 与 Security 均成功，总计 3420 Tokens、约 7.29 秒；Identity v1 未合并两个同根因 Finding，导致 1 个评测 False Positive 和 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline。
+- Finding Identity v2 已用这组真实输出构建自动化回归，但尚未完成真实 DeepSeek 重跑。
 
 ---
 
@@ -2289,11 +2390,11 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
-2. 提交当前干净代码后，选择一个低成本案例做显式 DeepSeek 多 Agent partial trial；
-3. 使用新的未见案例比较 General、单专业 Agent 与 Planner 多 Agent 的质量、Token 和顺序执行延迟；
-4. 设计 Agent Execution 持久化、已成功结果复用和明确的 `PARTIAL` 策略；
-5. 再实现并发上限、Token Budget 和 Rate Limit，满足门槛后才考虑生产切换。
+1. 提交 Finding Identity v2 后，重跑同一个 SQL 注入 DeepSeek 多 Agent partial trial；
+2. 验证真实结果是否从 `2 -> 2` 变为 `2 -> 1`，且 Case Pass 恢复；
+3. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
+4. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
+5. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
 
 ### 9.2 后续能力
 

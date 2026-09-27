@@ -101,6 +101,12 @@ contributions. Mock usage remains `null`; this command is a plumbing self-test, 
 evidence. `--multi-agent` cannot be combined with `--agent-role`, `--plan-only`, or
 `--save-baseline`.
 
+Multi-agent runs also record `finding_identity_version`. `finding-text-v2` preserves the original
+high-threshold lexical match and adds a conservative same-root-cause path that requires the same
+file, shared non-generic title signals, a shared title bigram, and an identical code span in both
+explanations. Category and severity never influence identity matching. Historical single-agent
+baselines do not have this field and load it as `null`.
+
 A real multi-agent partial trial requires all explicit safety flags:
 
 ```powershell

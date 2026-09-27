@@ -175,6 +175,7 @@ class EvaluationRun(BaseModel):
     prompt_version: str
     execution_mode: EvaluationExecutionMode = EvaluationExecutionMode.SINGLE_AGENT
     agent_role: AgentRole | None = AgentRole.GENERAL
+    finding_identity_version: str | None = None
     matcher_version: MatcherVersion = LEGACY_MATCHER_VERSION
     is_model_baseline: bool
     schema_version: str

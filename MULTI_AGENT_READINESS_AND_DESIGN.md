@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：第三批 Eval-only Planned Multi-Agent Runner 已完成，尚未实现多 Agent 生产链路
+> 状态：第一次真实多 Agent 试跑已完成，Finding Identity v2 修复待真实重验，尚未实现生产链路
 > 更新时间：2026-09-27
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -448,6 +448,17 @@ Deterministic Planner
 - 所有 Agent Usage 完整时才汇总 Token，缺失时保持 `null`；
 - 历史 Eval/Baseline 缺失 `execution_mode` 时继续解释为单 Agent。
 
+第三阶段第一次真实 DeepSeek partial trial 暴露了 Identity v1 漏合并：Correctness 与 Security 对同一个 SQL f-string 根因分别生成一个 Finding，但标题改写幅度较大，旧 token containment 没有把它们归为一组。结果是聚合前后均为 2 条、`merged=0`、评测产生 1 个 False Positive。
+
+Finding Identity v2 的修复规则：
+
+- 保留原有高阈值 token containment；
+- 新增“同文件 + 至少两个共同信号词 + 共同非通用 bigram + Explanation 中相同 code span”的保守路径；
+- 不使用 Category、Severity、Confidence 或常见 Suggestion 判定身份；
+- 新增同一 SQL 代码上的注入与缺少索引负例，防止过度合并；
+- 聚合与 Eval 输出显式记录 `finding-text-v2`；
+- 历史 baseline 缺失该字段时保持 `null`。
+
 关键设计边界：
 
 - Category、Severity 不参与 Finding 匹配，避免标签冲突被匹配器掩盖；
@@ -565,10 +576,10 @@ ReviewContext
 
 生产链路仍通过一个 General Agent 和 `PassthroughReviewAggregator` 调用一次模型；上面的多 Agent 流程只存在于 Eval，不改变数据库和 GitHub 发布行为。
 
-自动化验收结果为 274 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。新增验证覆盖计划执行顺序、逐 Agent Latency、Usage 汇总、失败角色、已完成结果、聚合指标、CLI 安全门禁和历史 baseline 兼容。
+自动化验收结果为 277 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。Identity v2 新增真实同义输出正例、同代码不同问题负例、Aggregator 合并结果、版本元数据和历史 baseline 兼容测试。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
-本批没有运行真实 DeepSeek 多 Agent，也没有生成多 Agent baseline。Mock SQL 注入案例实际选择 Correctness 和 Security，执行两次 Agent，聚合前 2 个 Finding、聚合后 1 个、Duplicate Rate 为 0.5；完整 Seed Mock 产生 16 次 Agent 调用、10/10 Case Pass，并合并 5 个重复 Finding。这些只证明评测 plumbing，不能证明模型质量。
+真实 DeepSeek 多 Agent SQL 注入 partial trial 已绑定 commit `e6f43d0`：Correctness 与 Security 两次调用均成功，共 3420 Tokens、约 7.29 秒。两个 Agent 找到同一根因，但 Identity v1 没有合并，导致 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline；Identity v2 尚未真实重验。
 
-下一步增加混合缺陷、重复 Finding 和标签冲突案例。提交干净代码后，可选择一个低成本案例做显式 DeepSeek 多 Agent partial trial；之后再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+下一步提交 Identity v2，再用同一个 SQL 注入案例重跑真实 DeepSeek，验证聚合能否从 `2 -> 2` 修正为 `2 -> 1`。随后增加混合缺陷、重复 Finding 和标签冲突案例，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。

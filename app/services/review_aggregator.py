@@ -12,6 +12,7 @@ from app.domain.review.report import (
 )
 from app.services.review_agent import AgentReviewResult, AgentRole
 from app.services.review_finding_identity import (
+    FINDING_IDENTITY_VERSION,
     finding_identity,
     findings_describe_same_issue,
     normalize_finding_text,
@@ -76,6 +77,7 @@ class AggregationConflict:
 @dataclass(frozen=True, slots=True)
 class ReviewAggregationResult:
     report: ReviewReport
+    finding_identity_version: str
     decisions: tuple[AggregationDecision, ...]
     conflicts: tuple[AggregationConflict, ...]
     source_roles: tuple[AgentRole, ...]
@@ -185,6 +187,7 @@ class DeterministicReviewAggregator:
         )
         return ReviewAggregationResult(
             report=report,
+            finding_identity_version=FINDING_IDENTITY_VERSION,
             decisions=tuple(decisions),
             conflicts=tuple(conflicts),
             source_roles=source_roles,

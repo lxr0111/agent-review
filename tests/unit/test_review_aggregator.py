@@ -116,6 +116,7 @@ def test_aggregator_merges_duplicate_and_prefers_role_aligned_label() -> None:
 
     assert isinstance(aggregator, ReviewAggregator)
     assert result.report.findings == (specialist,)
+    assert result.finding_identity_version == "finding-text-v2"
     assert result.report.risk_level == ReviewRiskLevel.HIGH
     assert result.report.prompt_version == AGGREGATOR_PROMPT_VERSION
     assert [decision.action for decision in result.decisions] == [
@@ -170,6 +171,41 @@ def test_aggregator_output_is_independent_of_agent_result_order() -> None:
     )
 
     assert first == second
+
+
+def test_aggregator_merges_live_paraphrases_that_share_root_cause_and_code() -> None:
+    correctness = _finding(
+        title="SQL injection and broken lookups from f-string interpolation of email",
+        explanation=(
+            "The query is built as "
+            "`f\"SELECT * FROM users WHERE email = '{email}'\"`, so injection and "
+            "legitimate apostrophes both change the SQL text."
+        ),
+        confidence=0.95,
+    )
+    security = _finding(
+        title="SQL injection via string-interpolated query in find_user",
+        explanation=(
+            "The code executes "
+            "`f\"SELECT * FROM users WHERE email = '{email}'\"`; email is parsed as SQL "
+            "instead of bound data."
+        ),
+        confidence=0.98,
+    )
+
+    result = DeterministicReviewAggregator().aggregate_with_metadata(
+        context=_context(),
+        results=(
+            _result(AgentRole.CORRECTNESS, correctness),
+            _result(AgentRole.SECURITY, security),
+        ),
+    )
+
+    assert result.report.findings == (security,)
+    assert [decision.action for decision in result.decisions] == [
+        AggregationAction.KEPT,
+        AggregationAction.MERGED,
+    ]
 
 
 def test_aggregator_handles_multiple_empty_agent_reports() -> None:

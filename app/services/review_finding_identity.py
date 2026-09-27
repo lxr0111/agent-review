@@ -2,11 +2,40 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
+from itertools import pairwise
 
 from app.domain.review.report import ReviewFinding
 
+FINDING_IDENTITY_VERSION = "finding-text-v2"
 _MIN_TITLE_CONTAINMENT = 0.75
 _MIN_COMBINED_CONTAINMENT = 0.65
+_MIN_CODE_EVIDENCE_LENGTH = 12
+_GENERIC_TITLE_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "by",
+        "code",
+        "error",
+        "file",
+        "from",
+        "function",
+        "in",
+        "is",
+        "issue",
+        "line",
+        "method",
+        "of",
+        "query",
+        "the",
+        "through",
+        "to",
+        "via",
+        "with",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,10 +77,13 @@ def findings_describe_same_issue(left: ReviewFinding, right: ReviewFinding) -> b
         f"{left_identity.normalized_title} {left_identity.normalized_explanation}",
         f"{right_identity.normalized_title} {right_identity.normalized_explanation}",
     )
-    return (
+    if (
         title_containment >= _MIN_TITLE_CONTAINMENT
         and combined_containment >= _MIN_COMBINED_CONTAINMENT
-    )
+    ):
+        return True
+
+    return _shares_root_cause_and_code_evidence(left, right)
 
 
 def normalize_finding_text(value: str) -> str:
@@ -67,3 +99,42 @@ def _token_containment(left: str, right: str) -> float:
     if smallest_size == 0:
         return 0.0
     return len(left_tokens & right_tokens) / smallest_size
+
+
+def _shares_root_cause_and_code_evidence(
+    left: ReviewFinding,
+    right: ReviewFinding,
+) -> bool:
+    left_title_tokens = _signal_tokens(left.title)
+    right_title_tokens = _signal_tokens(right.title)
+    if len(left_title_tokens & right_title_tokens) < 2:
+        return False
+    if not (_signal_bigrams(left.title) & _signal_bigrams(right.title)):
+        return False
+    return bool(_code_evidence(left.explanation) & _code_evidence(right.explanation))
+
+
+def _signal_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in normalize_finding_text(value).split()
+        if token not in _GENERIC_TITLE_TOKENS
+    }
+
+
+def _signal_bigrams(value: str) -> set[tuple[str, str]]:
+    tokens = [
+        token
+        for token in normalize_finding_text(value).split()
+        if token not in _GENERIC_TITLE_TOKENS
+    ]
+    return set(pairwise(tokens))
+
+
+def _code_evidence(value: str) -> set[str]:
+    evidence: set[str] = set()
+    for raw_span in re.findall(r"`([^`\r\n]+)`", value):
+        normalized = normalize_finding_text(raw_span)
+        if len(normalized) >= _MIN_CODE_EVIDENCE_LENGTH:
+            evidence.add(normalized)
+    return evidence

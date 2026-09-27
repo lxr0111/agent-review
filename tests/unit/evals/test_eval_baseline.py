@@ -76,6 +76,7 @@ def test_historical_baseline_without_matcher_metadata_defaults_to_text_v1() -> N
 
     assert baseline.evaluation.matcher_version == MatcherVersion.TEXT_V1
     assert baseline.evaluation.agent_role == AgentRole.GENERAL
+    assert baseline.evaluation.finding_identity_version is None
     assert {case.agent_role for case in baseline.evaluation.cases} == {AgentRole.GENERAL}
 
 
