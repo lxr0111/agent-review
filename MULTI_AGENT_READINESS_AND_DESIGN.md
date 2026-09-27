@@ -605,3 +605,18 @@ Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 
 这次没有标签冲突，因此 `aggregation_conflicts` 合理地为空；旧试跑中的单个 Conflict 没有复现，不能从本次结果反推旧字段。两个 Agent 的 `unique_finding_count` 都为 0，说明这个案例验证了去重和审计，而没有提供 Recall 增益证据。运行是 dirty-worktree partial trial，不是模型 baseline。
 
 这仍是 Eval-only 能力：审计快照没有进入 ORM、数据库或 GitHub Review，生产仍运行单 General Agent。模型原始 Finding 可能包含短代码证据，保存实验 JSON 时应按普通评审输出管理，不能将其当作无敏感内容的纯指标文件。
+
+## 18. 多缺陷聚合挑战集
+
+原有 Seed 与 Holdout 主要验证单个目标缺陷，不足以覆盖多 Agent 聚合最危险的两类错误：同一根因没有合并，以及不同根因被过度合并。新增的 `aggregation-v1` 是开发挑战集，不是 Holdout，包含：
+
+1. 同一循环查询上的 SQL 注入与 N+1，并让 Correctness/Security 对注入产生标签冲突；
+2. 同一 `open(...)` 表达式上的路径穿越与文件句柄未关闭；
+3. 跨文件的 N+1 与重复业务规则；
+4. 会触发 Security 路由但实现正确的参数化查询负例。
+
+默认 Mock 全集离线运行会执行 10 次规划后的 Agent 调用，将 16 条重复 Fixture Finding 聚合成 6 条期望 Finding，4/4 Case Pass、0 False Positive。测试专用 Role-aware Provider 则更接近聚合边界：重叠案例从 `3 -> 2`，SQL 注入完成一次合并，N+1 保持独立，并产生可审计的 Category/Severity 双冲突；相邻路径与资源问题保持 `2 -> 2`；跨文件两个专业角色各贡献一条独有 Finding；负例保持 `0 -> 0`。
+
+复杂场景还对 Correctness、Security、Performance 三个结果的全部排列做了验证，最终 Report、Decisions、Conflicts 和 Source Roles 均保持一致。现有 Aggregator 通过挑战，因此本批没有调整 Identity 阈值或生产逻辑。
+
+这批证据全部来自自动化测试，没有调用 DeepSeek。`aggregation-v1` 已被开发过程看到，不能作为泛化质量证明；后续真实 partial trial 也需要明确记录 Token、Latency、Git 状态和 partial 非 baseline 边界。

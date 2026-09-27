@@ -19,6 +19,11 @@ The datasets have different roles:
   It changes only the known missing import in the contained-upload negative fixture and that
   fixture's synthetic head SHA. Use it for future regression checks while preserving v1 as the
   record of the first unseen run.
+- `review_aggregation_v1.json` is a four-case multi-agent development challenge set. It covers
+  overlapping SQL-injection/N+1 findings, adjacent path-traversal/resource-lifecycle defects,
+  cross-file performance/maintainability findings, and a routed negative sample. It is not a
+  holdout or model baseline; its purpose is to exercise planning, identity, aggregation audit,
+  and contribution metrics before live multi-agent experiments.
 
 The first live `review-v2 + holdout-v1` baseline is checked in as
 `deepseek-flash__review-v2__holdout-v1.json`. Preserve its raw evaluator output. Manual review
@@ -94,6 +99,19 @@ mock provider:
 ```powershell
 python -m evals.runner --multi-agent --case-id security-sql-injection
 ```
+
+Run the complete offline aggregation challenge set with:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_aggregation_v1.json `
+  --multi-agent
+```
+
+The deterministic self-test executes 10 planned agent calls across four cases, reduces 16 raw
+fixture findings to six expected findings, and keeps mock usage `null`. Dedicated scripted-provider
+tests separately create partial overlap, Category/Severity conflicts and role-specific empty
+outputs; these remain evaluator/aggregator tests rather than evidence of model quality.
 
 This mode records planned roles and reasons, per-agent prompt versions, latency, raw findings and
 usage, plus pre/post-aggregation finding counts, duplicate rate and agent contributions. Each

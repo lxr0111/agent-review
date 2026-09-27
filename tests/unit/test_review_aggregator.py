@@ -1,4 +1,5 @@
 from dataclasses import replace
+from itertools import permutations
 
 import pytest
 
@@ -171,6 +172,61 @@ def test_aggregator_output_is_independent_of_agent_result_order() -> None:
     )
 
     assert first == second
+
+
+def test_aggregator_mixed_groups_are_independent_of_agent_result_order() -> None:
+    correctness = _result(
+        AgentRole.CORRECTNESS,
+        _finding(
+            title="SQL injection from interpolated email query",
+            explanation=(
+                "The code executes "
+                "`f\"SELECT * FROM users WHERE email = '{email}'\"`; an email can "
+                "change the SQL statement."
+            ),
+            category=FindingCategory.CORRECTNESS,
+            severity=FindingSeverity.MEDIUM,
+            confidence=0.9,
+        ),
+    )
+    security = _result(
+        AgentRole.SECURITY,
+        _finding(
+            title="SQL injection through interpolated email query",
+            explanation=(
+                "The expression "
+                "`f\"SELECT * FROM users WHERE email = '{email}'\"` parses attacker "
+                "input as SQL instead of bound data."
+            ),
+            confidence=0.97,
+        ),
+    )
+    performance = _result(
+        AgentRole.PERFORMANCE,
+        _finding(
+            title="N+1 customer lookup inside the order loop",
+            explanation="One customer query is executed for every order in the loop.",
+            file_path="src/orders.py",
+            category=FindingCategory.PERFORMANCE,
+            severity=FindingSeverity.MEDIUM,
+            confidence=0.94,
+        ),
+    )
+    aggregator = DeterministicReviewAggregator()
+
+    results = tuple(
+        aggregator.aggregate_with_metadata(
+            context=_context(),
+            results=ordered_results,
+        )
+        for ordered_results in permutations((correctness, security, performance))
+    )
+
+    assert all(result == results[0] for result in results[1:])
+    assert len(results[0].report.findings) == 2
+    assert [decision.action for decision in results[0].decisions].count(
+        AggregationAction.MERGED
+    ) == 1
 
 
 def test_aggregator_merges_live_paraphrases_that_share_root_cause_and_code() -> None:

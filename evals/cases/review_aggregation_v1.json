@@ -1,0 +1,194 @@
+{
+  "schema_version": "review-eval-v1",
+  "dataset_version": "aggregation-v1",
+  "cases": [
+    {
+      "id": "aggregation-overlap-sql-injection-n-plus-one",
+      "description": "One looped SQL lookup contains both injection and N+1 query defects, while two agents describe the injection differently.",
+      "pull_request": {
+        "repository": "eval/agent-review-aggregation",
+        "number": 1,
+        "title": "Load users for a list of email addresses",
+        "body": "Add a batch lookup helper for repeated user lookups.",
+        "base_sha": "base-aggregation-overlap-sql-n-plus-one",
+        "head_sha": "head-aggregation-overlap-sql-n-plus-one",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/users.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+def find_users(db, emails):\n+    users = []\n+    for email in emails:\n+        query = f\"SELECT * FROM users WHERE email = '{email}'\"\n+        users.append(db.query(query).fetchone())\n+    return users",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "batch-email-sql-injection",
+          "description": "The email value is interpolated into SQL and allows query injection.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/users.py",
+          "range": {"start_line": 4, "end_line": 5},
+          "match_terms": [
+            ["sql injection", "query injection"],
+            ["email", "interpolated", "parameterized query"]
+          ]
+        },
+        {
+          "id": "batch-user-n-plus-one",
+          "description": "Executing one user query per email creates an N+1 database access pattern.",
+          "category": "performance",
+          "severity": "medium",
+          "file_path": "src/users.py",
+          "range": {"start_line": 3, "end_line": 5},
+          "match_terms": [
+            ["n+1", "n + 1", "one query per email"],
+            ["loop", "batch", "repeated query"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "aggregation-adjacent-path-and-resource",
+      "description": "A single file-open expression creates distinct path traversal and resource lifecycle defects that must not be merged.",
+      "pull_request": {
+        "repository": "eval/agent-review-aggregation",
+        "number": 2,
+        "title": "Read an uploaded document",
+        "body": "Open an upload by its request filename and return its bytes.",
+        "base_sha": "base-aggregation-adjacent-path-resource",
+        "head_sha": "head-aggregation-adjacent-path-resource",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/uploads.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+from pathlib import Path\n+UPLOAD_ROOT = Path('/srv/uploads')\n+\n+def read_upload(filename):\n+    handle = open(UPLOAD_ROOT / filename, 'rb')\n+    return handle.read()",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "upload-path-escape",
+          "description": "The unvalidated filename can escape the upload root through path traversal.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/uploads.py",
+          "range": {"start_line": 5, "end_line": 5},
+          "match_terms": [
+            ["path traversal", "escape the upload root", "outside upload"],
+            ["filename", "containment", "resolve"]
+          ]
+        },
+        {
+          "id": "upload-handle-not-closed",
+          "description": "The opened upload file handle is never closed.",
+          "category": "reliability",
+          "severity": "medium",
+          "file_path": "src/uploads.py",
+          "range": {"start_line": 5, "end_line": 6},
+          "match_terms": [
+            ["not closed", "never closed", "resource leak", "file handle"],
+            ["with open", "context manager", "close"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "aggregation-cross-file-performance-maintainability",
+      "description": "A multi-file change combines an N+1 customer lookup with a duplicated shipping rule.",
+      "pull_request": {
+        "repository": "eval/agent-review-aggregation",
+        "number": 3,
+        "title": "Add order export and channel shipping helpers",
+        "body": "Load customer data for exported orders and add the same free-shipping rule for each sales channel.",
+        "base_sha": "base-aggregation-cross-file",
+        "head_sha": "head-aggregation-cross-file",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/orders.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+def export_orders(db):\n+    rows = []\n+    for order in db.query(Order).all():\n+        customer = db.get(Customer, order.customer_id)\n+        rows.append((order, customer))\n+    return rows",
+          "previous_path": null
+        },
+        {
+          "path": "src/shipping.py",
+          "status": "added",
+          "additions": 8,
+          "deletions": 0,
+          "changes": 8,
+          "patch": "@@ -0,0 +1,8 @@\n+def web_free_shipping(total):\n+    return total >= 100\n+\n+def mobile_free_shipping(total):\n+    return total >= 100\n+\n+def partner_free_shipping(total):\n+    return total >= 100",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "export-customer-n-plus-one",
+          "description": "Loading each customer inside the order loop creates an N+1 query pattern.",
+          "category": "performance",
+          "severity": "medium",
+          "file_path": "src/orders.py",
+          "range": {"start_line": 3, "end_line": 4},
+          "match_terms": [
+            ["n+1", "n + 1", "one customer query per order"],
+            ["db.get", "inside the loop", "eager load", "batch"]
+          ]
+        },
+        {
+          "id": "channel-shipping-rule-duplicated",
+          "description": "The free-shipping threshold is duplicated across three channel helpers.",
+          "category": "maintainability",
+          "severity": "low",
+          "file_path": "src/shipping.py",
+          "range": {"start_line": 1, "end_line": 8},
+          "match_terms": [
+            ["duplicated", "duplicate", "three places"],
+            ["free shipping", "shipping threshold", "single source"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "aggregation-negative-parameterized-lookup",
+      "description": "A parameterized lookup validates input and should remain finding-free even though it triggers security routing signals.",
+      "pull_request": {
+        "repository": "eval/agent-review-aggregation",
+        "number": 4,
+        "title": "Add safe account lookup",
+        "body": "Use a parameterized SQL query after validating the account identifier.",
+        "base_sha": "base-aggregation-negative-query",
+        "head_sha": "head-aggregation-negative-query",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/accounts.py",
+          "status": "added",
+          "additions": 5,
+          "deletions": 0,
+          "changes": 5,
+          "patch": "@@ -0,0 +1,5 @@\n+def find_account(cursor, account_id):\n+    if not isinstance(account_id, int) or account_id <= 0:\n+        raise ValueError('account_id must be a positive integer')\n+    cursor.execute('SELECT * FROM accounts WHERE id = %s', (account_id,))\n+    return cursor.fetchone()",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": []
+    }
+  ]
+}

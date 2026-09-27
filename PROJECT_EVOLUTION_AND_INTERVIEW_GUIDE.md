@@ -2363,6 +2363,36 @@ Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指�
 
 这些快照当前只存在于 Eval 运行结果，没有写入业务数据库，也不等于生产级 tracing。多 Agent baseline 保存仍被禁用；尚未实现 Agent Execution 持久化、部分失败恢复、并行执行和预算控制。
 
+### 6.10 为什么增加独立的聚合挑战集
+
+#### 要解决的问题
+
+原有 Seed 和 Holdout 主要是单缺陷案例，默认 Mock 又会让所有被选 Agent 返回相同结果。它可以验证管线连通，却不能充分证明聚合器能区分“同一根因的不同表述”和“相邻代码上的不同根因”，也无法稳定制造标签冲突与独有贡献。
+
+#### 设计选择与行为变化
+
+- 新增四案例 `aggregation-v1` 开发集，不修改或重写现有 Seed、Holdout 与历史 baseline；
+- 覆盖 SQL 注入与 N+1 重叠、路径穿越与资源未关闭相邻、跨文件性能与可维护性缺陷，以及多 Agent 负例；
+- 数据集继续使用普通 `review-eval-v1` Schema，因此既能离线运行，也能以后显式选择单案例做 live trial；
+- 测试专用 Role-aware Provider 按 Prompt Version 返回预设输出，精确制造部分重叠、Category/Severity 冲突、空 Agent 输出和独有 Finding；
+- 正式 `MockLLMProvider`、真实 Provider、Aggregator 和生产 Pipeline 均未修改。
+
+#### 自动化验证证据
+
+默认离线多 Agent 自测执行 4 个 Case、10 次 Agent 调用，将 16 条确定性 Mock Findings 聚合为 6 条期望 Findings，4/4 Case Pass、0 False Positive、Usage 保持 `null`。角色脚本测试进一步验证：重复 SQL 注入与独有 N+1 形成 `3 -> 2`；Category/Severity 双冲突选择 Security/High；共享同一 `open(...)` 代码证据的路径穿越与资源泄漏保持 `2 -> 2`；跨文件两个专业 Agent 各贡献一条独有 Finding；负例保持 `0 -> 0`。三 Agent、两个根因的全部输入排列得到相同聚合结果。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub，没有产生新的模型质量、成本或延迟结论。Mock 与脚本 Provider 结果只证明评测器和聚合器的确定性行为。
+
+#### 面试怎么讲
+
+> 我没有只用单缺陷样例验证多 Agent。为了防止去重规则过度合并，我建立了独立聚合挑战集，把同一行代码上的 SQL 注入与 N+1、同一个 open 表达式上的路径穿越与资源泄漏放在一起，并用角色脚本稳定制造标签冲突。这样可以分别验证重复合并、不同根因保留、冲突决策和 Agent 独有贡献。
+
+#### 准确边界与尚未完成
+
+`aggregation-v1` 是已知标签的开发集，不是新的盲测 Holdout。当前贡献统计表示聚合层面的独有 Finding，不等于经过人工确认的真实有效贡献。下一步应提交后选择少量案例做真实 DeepSeek partial trial，再用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2419,12 +2449,13 @@ Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指�
 | Eval-only Planned Multi-Agent Runner | 274 | Planner/Registry/Agent/Aggregator 串联、执行级指标、贡献统计、失败角色与安全门禁 |
 | Finding Identity v2 | 277 | 用真实多 Agent 同义输出构建回归，共同根因与代码证据去重，并保留不同问题负例 |
 | 聚合审计快照 | 278 | 原始 Agent Findings、kept/merged 决策、规范指纹、Category/Severity 冲突值与历史 baseline 兼容 |
+| 多缺陷聚合挑战集 | 286 | 四类混合案例、角色脚本冲突、独有贡献、负例和复杂输入顺序稳定性 |
 
 当前最近一次结果：
 
 ```text
-Targeted eval tests: 10 passed
-All tests: 278 passed, 2 third-party deprecation warnings
+Targeted aggregation tests: 16 passed
+All tests: 286 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (98 source files)
 git diff --check: passed
@@ -2462,7 +2493,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
+1. 提交后选择 `aggregation-v1` 中的低成本案例做真实 DeepSeek partial trial；
 2. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
 3. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
 
