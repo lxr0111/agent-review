@@ -2330,6 +2330,37 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 
 如果 Planner 本身也调用 LLM，每次评审会多一次费用和失败点，而且路由变化难以解释。确定性 Planner 可以输出命中的具体原因，单元测试也能冻结路由行为。它的目标不是判断代码一定有缺陷，而是用低成本信号缩小专业 Reviewer 的候选范围；真实质量仍由后续模型评测决定。
 
+### 6.9 为什么聚合结果还需要审计快照
+
+#### 要解决的问题
+
+仅记录 `2 -> 1` 和一个 Conflict 数量，只能证明发生了合并，不能回答“两个 Agent 原来分别说了什么、哪条被选中、冲突发生在哪个标签、为什么选择这个值”。真实 SQL 注入重验已经出现过 `aggregation_conflict_count=1`，旧 JSON 无法进一步解释。
+
+#### 设计选择与行为变化
+
+- 每次 Agent 成功执行都保留结构化原始 Findings，并继续保留 `finding_count` 便于聚合统计；
+- 每个聚合决策记录 `kept/merged`、来源 Role、文件、标题、规范 SHA-256 指纹和选择原因；
+- Category/Severity 冲突记录字段名、全部观察值、最终选择值、规范指纹和选择原因；
+- 最终 `actual_findings` 仍只保存聚合后的结果，Matcher 和质量指标仍对最终结果评分；
+- 新字段都提供空元组默认值，因此历史单 Agent baseline 不需要重写；
+- 改动只位于 Eval 输出层，生产 Worker 仍使用单 General Agent 与透传 Aggregator。
+
+#### 自动化验证证据
+
+Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指纹下的 `kept/merged` 决策和贡献统计。专门的冲突用例让 Correctness 与 Security 对同一 Finding 返回不同 Category/Severity，验证最终选择 Security/High，同时完整保留 `correctness/security` 与 `medium/high` 的观察值。历史 baseline 兼容测试验证新增字段缺失时加载为空。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub，也没有新增真实模型质量结论。旧的真实 SQL 注入结果仍只能提供 Conflict 数量；需要在本批提交后显式重跑，新的 JSON 才能展示该次模型输出的真实冲突明细。
+
+#### 面试怎么讲
+
+> 多 Agent 聚合不能只输出一个最终答案，否则出现误合并或标签争议时无法定位责任。我把每个原始 Finding、规范指纹、保留/合并决策和标签冲突都建模成结构化评测快照，使最终报告可以追溯到具体 Agent，同时让质量评分仍只针对去重后的发布候选结果。
+
+#### 准确边界与尚未完成
+
+这些快照当前只存在于 Eval 运行结果，没有写入业务数据库，也不等于生产级 tracing。多 Agent baseline 保存仍被禁用；尚未实现 Agent Execution 持久化、部分失败恢复、并行执行和预算控制。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2385,12 +2416,13 @@ Webhook 需要快速响应，而 GitHub API、模型调用和发布都可能很�
 | Validator 与确定性 Aggregator | 265 | 聚合边界验证、Finding 身份、跨 Agent 去重、标签冲突审计和输入顺序无关性 |
 | Eval-only Planned Multi-Agent Runner | 274 | Planner/Registry/Agent/Aggregator 串联、执行级指标、贡献统计、失败角色与安全门禁 |
 | Finding Identity v2 | 277 | 用真实多 Agent 同义输出构建回归，共同根因与代码证据去重，并保留不同问题负例 |
+| 聚合审计快照 | 278 | 原始 Agent Findings、kept/merged 决策、规范指纹、Category/Severity 冲突值与历史 baseline 兼容 |
 
 当前最近一次结果：
 
 ```text
-Targeted tests: 24 passed
-All tests: 277 passed, 2 third-party deprecation warnings
+Targeted eval tests: 10 passed
+All tests: 278 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (98 source files)
 git diff --check: passed
@@ -2419,7 +2451,7 @@ git diff --check: passed
 - 相同 6 个案例的 General v2 使用 8205 Tokens；专业单角色试跑多使用 334 Tokens（约 4.1%），质量指标在这些简单已见案例上相同。该比较不等于 Planner 实际多 Agent 总成本，也不构成泛化质量结论。
 - 第一次真实 DeepSeek 多 Agent SQL 注入 partial trial 绑定 commit `e6f43d0`：Correctness 与 Security 均成功，总计 3420 Tokens、约 7.29 秒；Identity v1 未合并两个同根因 Finding，导致 1 个评测 False Positive 和 Case Pass 失败。该结果是 dirty-worktree partial trial，不是 baseline。
 - Finding Identity v2 真实重验绑定 commit `dd95c4b`：两个 Agent 均成功，聚合从 `2 -> 2` 修复为 `2 -> 1`，Merged=1、False Positive=0、Case Pass=true；总计 3685 Tokens、约 8.55 秒。该结果仍是 dirty-worktree partial trial，不是 baseline。
-- v2 重验出现 1 个 Aggregation Conflict，但当前 Eval 仅记录数量，无法从输出确定冲突字段；这被保留为后续可观测性工作，而不是猜测结论。
+- v2 重验出现 1 个 Aggregation Conflict；当次旧 Eval 输出只记录数量，因此仍不追溯猜测冲突字段。现在代码已能输出原始 Findings、冲突观察值、最终值和决策原因，但需要提交后重新进行显式 live trial 才能取得该真实运行的新格式证据。
 
 ---
 
@@ -2427,11 +2459,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 在 Eval Case 输出中加入 Aggregation Conflict 明细和每个 Agent 的原始 Finding；
-2. 记录每条 Finding 的 kept/merged 决策、规范指纹和选择原因；
-3. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
-4. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
-5. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
+1. 增加包含多个真实缺陷、相邻重复 Finding 和标签冲突的聚合评测案例；
+2. 提交后对既有 SQL 注入案例做一次受保护的真实重验，确认新审计字段在真实 Provider 输出下完整；
+3. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
+4. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
 
 ### 9.2 后续能力
 

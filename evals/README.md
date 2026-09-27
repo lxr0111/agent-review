@@ -95,11 +95,15 @@ mock provider:
 python -m evals.runner --multi-agent --case-id security-sql-injection
 ```
 
-This mode records planned roles and reasons, per-agent prompt versions, latency, findings and
-usage, plus pre/post-aggregation finding counts, duplicate rate, conflicts and agent
-contributions. Mock usage remains `null`; this command is a plumbing self-test, not model-quality
-evidence. `--multi-agent` cannot be combined with `--agent-role`, `--plan-only`, or
-`--save-baseline`.
+This mode records planned roles and reasons, per-agent prompt versions, latency, raw findings and
+usage, plus pre/post-aggregation finding counts, duplicate rate and agent contributions. Each
+aggregation decision includes `kept`/`merged`, the source role, canonical fingerprint and reason;
+each category or severity conflict includes all observed values, the selected value and reason.
+This makes the final report traceable back to each specialist without exposing prompts or source
+patches as separate fields. Model findings can still quote small code spans, so saved experiment
+output should be handled with the same care as ordinary review output. Mock usage remains `null`;
+this command is a plumbing self-test, not model-quality evidence. `--multi-agent` cannot be
+combined with `--agent-role`, `--plan-only`, or `--save-baseline`.
 
 Multi-agent runs also record `finding_identity_version`. `finding-text-v2` preserves the original
 high-threshold lexical match and adds a conservative same-root-cause path that requires the same

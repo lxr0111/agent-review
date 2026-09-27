@@ -1,13 +1,14 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.domain.review.report import FindingCategory, FindingSeverity
 from app.providers.llm.exceptions import LLMTransientError
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.services.planned_review_orchestrator import PlannedReviewOrchestrator
 from app.services.review_agent import AgentRole
 from app.services.review_agent_registry import create_default_agent_registry
-from app.services.review_aggregator import DeterministicReviewAggregator
+from app.services.review_aggregator import AggregationAction, DeterministicReviewAggregator
 from app.services.review_planner import DeterministicReviewPlanner
 from evals.baseline import GitState
 from evals.metrics import EvaluationExecutionMode, EvaluationOutcome
@@ -37,6 +38,41 @@ class _UsageProvider:
         return LLMReviewResult(
             output=self._output,
             usage=LLMTokenUsage(input_tokens=70, output_tokens=30, total_tokens=100),
+        )
+
+
+class _RoleAwareConflictProvider:
+    model_name = "conflict-test-model"
+
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
+        is_security = prompt.version == "review-security-v1"
+        return LLMReviewResult(
+            output=LLMReviewOutput(
+                summary="One issue found.",
+                findings=(
+                    LLMReviewFinding(
+                        title="SQL injection through interpolated email",
+                        explanation=(
+                            "The query interpolates `email` directly into SQL, allowing "
+                            "untrusted input to alter the statement."
+                        ),
+                        suggestion="Use a parameterized query.",
+                        file_path="src/users.py",
+                        category=(
+                            FindingCategory.SECURITY
+                            if is_security
+                            else FindingCategory.CORRECTNESS
+                        ),
+                        severity=(
+                            FindingSeverity.HIGH
+                            if is_security
+                            else FindingSeverity.MEDIUM
+                        ),
+                        confidence=0.95 if is_security else 0.90,
+                    ),
+                ),
+            ),
+            usage=None,
         )
 
 
@@ -105,7 +141,28 @@ def test_mock_multi_agent_runner_self_tests_planning_and_aggregation() -> None:
         AgentRole.CORRECTNESS,
         AgentRole.SECURITY,
     ]
+    assert [execution.finding_count for execution in case.agent_executions] == [1, 1]
+    assert all(
+        len(execution.findings) == execution.finding_count
+        for execution in case.agent_executions
+    )
     assert case.post_aggregation_finding_count == 1
+    assert [decision.action for decision in case.aggregation_decisions] == [
+        AggregationAction.KEPT,
+        AggregationAction.MERGED,
+    ]
+    assert [decision.source_role for decision in case.aggregation_decisions] == [
+        AgentRole.SECURITY,
+        AgentRole.CORRECTNESS,
+    ]
+    assert len(
+        {
+            decision.canonical_fingerprint
+            for decision in case.aggregation_decisions
+        }
+    ) == 1
+    assert all(decision.reason for decision in case.aggregation_decisions)
+    assert case.aggregation_conflicts == ()
     assert {
         contribution.role: (
             contribution.raw_finding_count,
@@ -159,6 +216,44 @@ def test_live_multi_agent_runner_sums_usage_and_reproducibility_metadata() -> No
     ]
 
 
+def test_multi_agent_case_preserves_raw_labels_and_explains_conflict_resolution() -> None:
+    case = _security_case()
+    provider = _RoleAwareConflictProvider()
+
+    result = evaluate_multi_agent_case(case, _orchestrator(provider))
+
+    raw_findings = {
+        execution.role: execution.findings[0]
+        for execution in result.agent_executions
+    }
+    assert raw_findings[AgentRole.CORRECTNESS].category == FindingCategory.CORRECTNESS
+    assert raw_findings[AgentRole.CORRECTNESS].severity == FindingSeverity.MEDIUM
+    assert raw_findings[AgentRole.SECURITY].category == FindingCategory.SECURITY
+    assert raw_findings[AgentRole.SECURITY].severity == FindingSeverity.HIGH
+
+    assert result.actual_findings[0].category == FindingCategory.SECURITY
+    assert result.actual_findings[0].severity == FindingSeverity.HIGH
+    assert result.aggregation_conflict_count == 2
+    assert {
+        conflict.field: (
+            conflict.selected_value,
+            conflict.observed_values,
+        )
+        for conflict in result.aggregation_conflicts
+    } == {
+        "category": ("security", ("correctness", "security")),
+        "severity": ("high", ("high", "medium")),
+    }
+    assert all(conflict.reason for conflict in result.aggregation_conflicts)
+    assert {
+        conflict.canonical_fingerprint
+        for conflict in result.aggregation_conflicts
+    } == {
+        decision.canonical_fingerprint
+        for decision in result.aggregation_decisions
+    }
+
+
 def test_multi_agent_case_records_failed_role_and_completed_execution() -> None:
     case = _security_case()
     provider = _UsageProvider(_output(case), fail_on_call=2)
@@ -174,6 +269,8 @@ def test_multi_agent_case_records_failed_role_and_completed_execution() -> None:
         AgentRole.SECURITY,
     ]
     assert result.agent_executions[0].outcome == EvaluationOutcome.SUCCESSFUL_CASE
+    assert len(result.agent_executions[0].findings) == 1
     assert result.agent_executions[1].outcome == EvaluationOutcome.TRANSPORT_ERROR
+    assert result.agent_executions[1].findings == ()
     assert result.agent_executions[1].error_type == "LLMTransientError"
     assert result.usage.total_tokens is None

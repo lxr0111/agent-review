@@ -586,4 +586,18 @@ ReviewContext
 
 真实 DeepSeek 多 Agent SQL 注入试跑形成了可对照的两次 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出，Identity v2 在 commit `dd95c4b` 上成功完成 `2 -> 1` 合并并恢复 Case Pass。两次均因个人文档显示 dirty，且只执行已见 Seed 单案例，因此都不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-下一步先让 Eval 输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，再增加混合缺陷、重复 Finding 和标签冲突案例。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策。下一步增加混合缺陷、相邻但不同根因 Finding 和标签冲突案例，并在代码提交后用既有 SQL 注入案例做一次受保护的真实重验。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+
+## 17. 聚合审计快照
+
+只保存最终聚合 Finding 会丢失多 Agent 决策过程。现在每个 Eval Case 同时保存三层证据：
+
+1. `agent_executions[].findings`：每个专业 Agent 的原始结构化输出；
+2. `aggregation_decisions`：每条输入 Finding 是 `kept` 还是 `merged`，以及来源角色、规范指纹和原因；
+3. `aggregation_conflicts`：Category/Severity 的观察值、最终选择值、规范指纹和原因。
+
+最终 `actual_findings` 仍是去重后的发布候选，Matcher 只对它评分。这样审计信息不会改变 Recall、False Positive、Category Match 或 Severity Match 的定义。旧 baseline 缺少这些字段时默认加载为空，不重写历史事实。
+
+自动化测试覆盖无冲突合并、Category/Severity 双冲突、失败前已完成 Agent 的原始输出保留，以及历史 baseline 兼容。本批没有调用真实 Provider；此前 SQL 注入 live trial 的 Conflict 字段不能从旧输出倒推，必须在新提交上重新运行才能形成真实审计证据。
+
+这仍是 Eval-only 能力：审计快照没有进入 ORM、数据库或 GitHub Review，生产仍运行单 General Agent。模型原始 Finding 可能包含短代码证据，保存实验 JSON 时应按普通评审输出管理，不能将其当作无敏感内容的纯指标文件。

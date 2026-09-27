@@ -14,6 +14,8 @@ from app.services.review_planner import ReviewPlan
 from evals.metrics import (
     AgentContributionEvaluation,
     AgentExecutionEvaluation,
+    AggregationConflictEvaluation,
+    AggregationDecisionEvaluation,
     CaseEvaluation,
     EvaluationExecutionMode,
     EvaluationOutcome,
@@ -21,6 +23,7 @@ from evals.metrics import (
     PlannedAgentEvaluation,
     classify_error,
     error_case_evaluation,
+    evaluated_findings,
     successful_case_evaluation,
 )
 from evals.schemas import EvalCase
@@ -101,6 +104,27 @@ def _successful_multi_agent_evaluation(
         pre_aggregation_finding_count=pre_aggregation_count,
         merged_finding_count=merged_count,
         aggregation_conflict_count=len(result.aggregation.conflicts),
+        aggregation_decisions=tuple(
+            AggregationDecisionEvaluation(
+                action=decision.action,
+                source_role=decision.source_role,
+                file_path=decision.file_path,
+                title=decision.title,
+                canonical_fingerprint=decision.canonical_fingerprint,
+                reason=decision.reason,
+            )
+            for decision in result.aggregation.decisions
+        ),
+        aggregation_conflicts=tuple(
+            AggregationConflictEvaluation(
+                canonical_fingerprint=conflict.canonical_fingerprint,
+                field=conflict.field,
+                selected_value=conflict.selected_value,
+                observed_values=conflict.observed_values,
+                reason=conflict.reason,
+            )
+            for conflict in result.aggregation.conflicts
+        ),
         agent_contributions=_agent_contributions(result),
     )
 
@@ -121,6 +145,7 @@ def _successful_execution(
         outcome=EvaluationOutcome.SUCCESSFUL_CASE,
         latency_ms=execution.latency_ms,
         finding_count=len(execution.result.report.findings),
+        findings=evaluated_findings(execution.result.report.findings),
         usage=_eval_usage(execution.result.usage),
     )
 

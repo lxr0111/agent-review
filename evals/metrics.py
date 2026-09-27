@@ -15,6 +15,7 @@ from app.domain.review.report import (
 from app.providers.llm.exceptions import LLMOutputError, LLMProviderError, LLMTransientError
 from app.providers.llm.protocol import LLMTokenUsage
 from app.services.review_agent import AgentRole
+from app.services.review_aggregator import AggregationAction
 from app.services.review_finding_validator import ReviewFindingValidationError
 from evals.matcher import (
     CURRENT_MATCHER_VERSION,
@@ -54,6 +55,18 @@ class PlannedAgentEvaluation(BaseModel):
     reasons: tuple[str, ...] = Field(min_length=1)
 
 
+class EvaluatedFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    explanation: str
+    suggestion: str
+    file_path: str
+    severity: FindingSeverity
+    category: FindingCategory
+    confidence: float = Field(ge=0, le=1)
+
+
 class AgentExecutionEvaluation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -62,6 +75,7 @@ class AgentExecutionEvaluation(BaseModel):
     outcome: EvaluationOutcome
     latency_ms: float = Field(ge=0)
     finding_count: int = Field(ge=0)
+    findings: tuple[EvaluatedFinding, ...] = ()
     usage: EvalUsage = Field(default_factory=EvalUsage)
     error_type: str | None = None
 
@@ -76,6 +90,27 @@ class AgentContributionEvaluation(BaseModel):
     unique_finding_count: int = Field(ge=0)
 
 
+class AggregationDecisionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: AggregationAction
+    source_role: AgentRole
+    file_path: str
+    title: str
+    canonical_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reason: str
+
+
+class AggregationConflictEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    field: str
+    selected_value: str
+    observed_values: tuple[str, ...] = Field(min_length=2)
+    reason: str
+
+
 class FindingMatchDetail(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -86,18 +121,6 @@ class FindingMatchDetail(BaseModel):
     score: float = Field(ge=0, le=1)
     category_match: bool
     severity_match: bool
-
-
-class EvaluatedFinding(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    title: str
-    explanation: str
-    suggestion: str
-    file_path: str
-    severity: FindingSeverity
-    category: FindingCategory
-    confidence: float = Field(ge=0, le=1)
 
 
 class CaseEvaluation(BaseModel):
@@ -126,6 +149,8 @@ class CaseEvaluation(BaseModel):
     post_aggregation_finding_count: int = Field(default=0, ge=0)
     merged_finding_count: int = Field(default=0, ge=0)
     aggregation_conflict_count: int = Field(default=0, ge=0)
+    aggregation_decisions: tuple[AggregationDecisionEvaluation, ...] = ()
+    aggregation_conflicts: tuple[AggregationConflictEvaluation, ...] = ()
     duplicate_rate: float | None = Field(default=None, ge=0, le=1)
     agent_contributions: tuple[AgentContributionEvaluation, ...] = ()
     actual_findings: tuple[EvaluatedFinding, ...] = ()
@@ -204,6 +229,8 @@ def successful_case_evaluation(
     pre_aggregation_finding_count: int = 0,
     merged_finding_count: int = 0,
     aggregation_conflict_count: int = 0,
+    aggregation_decisions: tuple[AggregationDecisionEvaluation, ...] = (),
+    aggregation_conflicts: tuple[AggregationConflictEvaluation, ...] = (),
     agent_contributions: tuple[AgentContributionEvaluation, ...] = (),
 ) -> CaseEvaluation:
     result, details, category_matches, severity_matches = _score_findings(
@@ -245,26 +272,34 @@ def successful_case_evaluation(
         ),
         merged_finding_count=merged_finding_count,
         aggregation_conflict_count=aggregation_conflict_count,
+        aggregation_decisions=aggregation_decisions,
+        aggregation_conflicts=aggregation_conflicts,
         duplicate_rate=(
             _ratio(merged_finding_count, pre_aggregation_finding_count)
             if execution_mode == EvaluationExecutionMode.PLANNED_MULTI_AGENT
             else None
         ),
         agent_contributions=agent_contributions,
-        actual_findings=tuple(
-            EvaluatedFinding(
-                title=finding.title,
-                explanation=finding.explanation,
-                suggestion=finding.suggestion,
-                file_path=finding.file_path,
-                severity=finding.severity,
-                category=finding.category,
-                confidence=finding.confidence,
-            )
-            for finding in report.findings
-        ),
+        actual_findings=evaluated_findings(report.findings),
         matches=details,
         usage=_eval_usage(usage),
+    )
+
+
+def evaluated_findings(
+    findings: tuple[ReviewFinding, ...],
+) -> tuple[EvaluatedFinding, ...]:
+    return tuple(
+        EvaluatedFinding(
+            title=finding.title,
+            explanation=finding.explanation,
+            suggestion=finding.suggestion,
+            file_path=finding.file_path,
+            severity=finding.severity,
+            category=finding.category,
+            confidence=finding.confidence,
+        )
+        for finding in findings
     )
 
 
