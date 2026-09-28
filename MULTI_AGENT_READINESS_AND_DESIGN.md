@@ -1,7 +1,7 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：Finding Identity v3 已完成自动化修复，等待真实多 Agent 重验，尚未实现生产链路
-> 更新时间：2026-09-27
+> 状态：Finding Identity v3 已完成自动化修复与真实链路重验，尚未实现生产链路
+> 更新时间：2026-09-28
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
 ## 1. 文档目的
@@ -586,7 +586,7 @@ ReviewContext
 
 真实 DeepSeek 多 Agent SQL 注入试跑形成了三个阶段的 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出；Identity v2 在 commit `dd95c4b` 上完成 `2 -> 1` 合并并恢复 Case Pass；聚合审计版本在 commit `5d2e66d` 上进一步记录两份原始 Findings、Security `kept`、Correctness `merged` 和共同规范指纹。第三次结果为 False Positive=0、Case Pass=true、3637 Tokens、约 7.83 秒。三次都只执行已见 Seed 单案例，且工作区因个人文档显示 dirty，所以不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并拥有混合缺陷聚合挑战集。下一步先提交 Identity v3，再用相同路径/资源案例做真实重验；之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并拥有混合缺陷聚合挑战集。Identity v3 已完成相同路径/资源案例的真实链路重验；下一步使用新的未见案例比较架构，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
 
 ## 17. 聚合审计快照
 
@@ -635,4 +635,8 @@ Identity v3 保留旧规则，并增加 Explanation fallback：
 
 真实输出被固化为端到端 Eval 回归：三条原始 Finding 聚合为路径穿越和资源泄漏两条，Security 路径 Finding 被保留，Correctness 路径 Finding 被合并，Correctness 的资源 Finding 保持独有。SQL 注入/缺少索引与路径穿越/资源泄漏反例继续证明相同代码证据本身不足以触发合并。
 
-修复前真实试跑绑定 commit `2991ae8`，使用 4643 Tokens、约 13.07 秒，Recall=1.0 但 Case Pass=false。v3 当前只通过自动化测试，尚未重新调用真实 DeepSeek；提交后需要使用同一 Dataset SHA 和 Case ID 重验，才能确认真实输出下恢复 `3 -> 2`。
+修复前真实试跑绑定 commit `2991ae8`，使用 4643 Tokens、约 13.07 秒，Recall=1.0 但 Case Pass=false。
+
+v3 真实重验绑定 commit `06cedad` 和相同 Dataset SHA：Correctness 只输出资源泄漏，Security 只输出路径穿越，最终 `2 -> 2`、False Positive=0、Case Pass=true，总计 4044 Tokens、约 9.43 秒。两个角色各有一条独有贡献，说明本次模型输出形成了互补分工，且 Aggregator 没有误合并不同根因。
+
+由于本次模型没有再次生成重复路径 Finding，新 Explanation fallback 没有在 live 输出上触发；其合并正确性来自修复前真实输出的确定性回放。两次运行不是严格 A/B，不能把 599 Token 和约 3.64 秒的差异归因于本地 Identity 规则。两次都是 dirty-worktree、已知开发案例的 partial trial，不是 baseline。
