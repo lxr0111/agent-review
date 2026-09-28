@@ -122,7 +122,7 @@ def test_mock_multi_agent_runner_self_tests_planning_and_aggregation() -> None:
     assert result.run_kind == "multi_agent_evaluator_self_test"
     assert result.execution_mode == EvaluationExecutionMode.PLANNED_MULTI_AGENT
     assert result.agent_role is None
-    assert result.finding_identity_version == "finding-text-v2"
+    assert result.finding_identity_version == "finding-text-v3"
     assert result.is_model_baseline is False
     assert result.metrics.case_pass_rate == 1.0
     assert result.metrics.total_agent_calls == 2

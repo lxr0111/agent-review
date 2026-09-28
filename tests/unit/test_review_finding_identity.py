@@ -56,7 +56,7 @@ def test_identity_does_not_merge_related_but_distinct_issues() -> None:
     assert not findings_describe_same_issue(email_injection, sort_injection)
 
 
-def test_identity_v2_merges_live_agent_paraphrases_with_same_code_evidence() -> None:
+def test_identity_v3_preserves_v2_live_sql_paraphrase_matching() -> None:
     correctness = replace(
         _finding(),
         title="SQL injection and broken lookups from f-string interpolation of email",
@@ -78,11 +78,39 @@ def test_identity_v2_merges_live_agent_paraphrases_with_same_code_evidence() -> 
         confidence=0.98,
     )
 
-    assert FINDING_IDENTITY_VERSION == "finding-text-v2"
+    assert FINDING_IDENTITY_VERSION == "finding-text-v3"
     assert findings_describe_same_issue(correctness, security)
 
 
-def test_identity_v2_does_not_merge_different_issue_on_same_code_evidence() -> None:
+def test_identity_v3_merges_live_path_paraphrases_with_different_titles() -> None:
+    correctness = replace(
+        _finding(),
+        title="Unvalidated filename allows escaping the upload root",
+        explanation=(
+            "`UPLOAD_ROOT / filename` performs no validation of `filename`. A relative "
+            "value containing `..` resolves outside `/srv/uploads`, and because `pathlib` "
+            "replaces the base when the right operand is absolute, a filename such as "
+            "`/etc/passwd` ignores `UPLOAD_ROOT` entirely. The function can be used to "
+            "read arbitrary files readable by the process."
+        ),
+        file_path="src/uploads.py",
+    )
+    security = replace(
+        _finding(),
+        title="Path traversal / arbitrary file read in read_upload",
+        explanation=(
+            "`UPLOAD_ROOT / filename` performs no containment check. An absolute value "
+            "such as `/etc/passwd` discards the root entirely, while relative traversal "
+            "resolves outside `/srv/uploads`. Both let a caller read arbitrary readable "
+            "files as the service account."
+        ),
+        file_path="src/uploads.py",
+    )
+
+    assert findings_describe_same_issue(correctness, security)
+
+
+def test_identity_v3_does_not_merge_different_issue_on_same_code_evidence() -> None:
     injection = replace(
         _finding(),
         title="SQL injection through interpolated email",
@@ -104,6 +132,31 @@ def test_identity_v2_does_not_merge_different_issue_on_same_code_evidence() -> N
     )
 
     assert not findings_describe_same_issue(injection, missing_index)
+
+
+def test_identity_v3_keeps_path_traversal_and_resource_leak_distinct() -> None:
+    path_traversal = replace(
+        _finding(),
+        title="Path traversal through an unvalidated filename",
+        explanation=(
+            "`open(UPLOAD_ROOT / filename, 'rb')` accepts traversal segments without "
+            "resolving and checking containment under the upload root."
+        ),
+        file_path="src/uploads.py",
+    )
+    resource_leak = replace(
+        _finding(),
+        title="Upload file handle is never closed",
+        explanation=(
+            "`open(UPLOAD_ROOT / filename, 'rb')` returns after reading without closing "
+            "the file handle, causing a resource leak."
+        ),
+        file_path="src/uploads.py",
+        category=FindingCategory.RELIABILITY,
+        severity=FindingSeverity.MEDIUM,
+    )
+
+    assert not findings_describe_same_issue(path_traversal, resource_leak)
 
 
 def test_identity_requires_the_same_file() -> None:

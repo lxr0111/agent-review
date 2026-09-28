@@ -117,7 +117,7 @@ def test_aggregator_merges_duplicate_and_prefers_role_aligned_label() -> None:
 
     assert isinstance(aggregator, ReviewAggregator)
     assert result.report.findings == (specialist,)
-    assert result.finding_identity_version == "finding-text-v2"
+    assert result.finding_identity_version == "finding-text-v3"
     assert result.report.risk_level == ReviewRiskLevel.HIGH
     assert result.report.prompt_version == AGGREGATOR_PROMPT_VERSION
     assert [decision.action for decision in result.decisions] == [

@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
 > 最后更新：2026-09-27
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Finding Identity v2 真实多 Agent重验通过。
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Finding Identity v3 自动化修复完成、等待真实重验。
 
 ## 1. 这份文档的用途
 
@@ -2393,6 +2393,36 @@ Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指�
 
 `aggregation-v1` 是已知标签的开发集，不是新的盲测 Holdout。当前贡献统计表示聚合层面的独有 Finding，不等于经过人工确认的真实有效贡献。下一步应提交后选择少量案例做真实 DeepSeek partial trial，再用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent。
 
+### 6.11 Finding Identity v3：Explanation 根因证据
+
+#### 要解决的问题
+
+`aggregation-adjacent-path-and-resource` 的第一次真实 DeepSeek 试跑中，Correctness 同时发现路径穿越和文件句柄未关闭，Security 也发现路径穿越。两个路径穿越 Finding 都引用 ``UPLOAD_ROOT / filename``，标签也都是 `security/high`，但标题分别使用“escaping upload root”和“path traversal / arbitrary file read”，没有满足 Identity v2 的两个共同标题信号词和共同 bigram，导致 `3 -> 3`、False Positive=1、Case Pass=false。
+
+#### 设计选择与行为变化
+
+- Identity 版本提升为 `finding-text-v3`，保留精确指纹、高阈值 containment 和 v2 的标题加代码证据路径；
+- 新增保守 fallback：必须同文件、Explanation 中存在完全相同的 inline code span；
+- 去除 inline code 后，两段 Explanation 还必须至少共享四个非通用信号词和一个连续信号 bigram；
+- Category、Severity、Confidence 和 Suggestion 仍不参与身份判断，标签冲突仍可被独立审计；
+- 没有放宽为模糊代码包含，也没有使用向量或 LLM 判断，保持确定性和低成本。
+
+#### 自动化验证证据
+
+真实试跑的两个路径穿越表述已固化为回归，能够合并；同一案例中的文件句柄未关闭仍保持独立，测试结果从 `3 -> 3` 修复为 `3 -> 2`、Merged=1、False Positive=0、Case Pass=true。SQL 注入与缺少索引、路径穿越与资源泄漏两个“相同代码证据但不同根因”反例继续不合并。全部聚合挑战和输入顺序测试保持通过。
+
+#### 真实集成证据
+
+修复前的真实运行绑定 commit `2991ae8`：Recall=1.0、3 条聚合结果、1 条重复误报、Case Pass=false，总计 4643 Tokens、约 13.07 秒。Identity v3 尚未重新调用 DeepSeek，因此当前只有自动化修复证据，不能宣称真实 Provider 已恢复 Case Pass。
+
+#### 面试怎么讲
+
+> 多 Agent 的难点不是让多个模型都输出，而是判断不同措辞是否属于同一根因。标题规则在 SQL 注入上有效，但真实路径穿越输出使用了完全不同的标题。我没有直接降低文本阈值，而是要求相同代码证据，并在移除代码后继续验证 Explanation 的根因词和连续词组，同时用相同代码上的资源泄漏反例防止过度合并。
+
+#### 准确边界与尚未完成
+
+规则仍是词法启发式，不理解任意同义词，也可能遗漏没有共同 inline code span 的重复问题。下一步需提交后重跑同一真实案例；更长期可以引入结构化 `evidence`、行号或规范化 root-cause key，减少对自然语言相似度的依赖。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2450,12 +2480,13 @@ Mock 多 Agent 测试验证了两个 Agent 的原始 Findings、同一规范指�
 | Finding Identity v2 | 277 | 用真实多 Agent 同义输出构建回归，共同根因与代码证据去重，并保留不同问题负例 |
 | 聚合审计快照 | 278 | 原始 Agent Findings、kept/merged 决策、规范指纹、Category/Severity 冲突值与历史 baseline 兼容 |
 | 多缺陷聚合挑战集 | 286 | 四类混合案例、角色脚本冲突、独有贡献、负例和复杂输入顺序稳定性 |
+| Finding Identity v3 | 289 | 真实路径穿越复述回归、Explanation 根因 fallback 和相同代码不同根因保护 |
 
 当前最近一次结果：
 
 ```text
-Targeted aggregation tests: 16 passed
-All tests: 286 passed, 2 third-party deprecation warnings
+Targeted identity/aggregation tests: 31 passed
+All tests: 289 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (98 source files)
 git diff --check: passed
@@ -2486,6 +2517,7 @@ git diff --check: passed
 - Finding Identity v2 真实重验绑定 commit `dd95c4b`：两个 Agent 均成功，聚合从 `2 -> 2` 修复为 `2 -> 1`，Merged=1、False Positive=0、Case Pass=true；总计 3685 Tokens、约 8.55 秒。该结果仍是 dirty-worktree partial trial，不是 baseline。
 - 聚合审计快照真实重验绑定 commit `5d2e66d`：Correctness 与 Security 各返回一条 SQL 注入 Finding，新格式完整记录两份原始 Findings；Security Finding 被 `kept`、Correctness Finding 被 `merged`，两者共享规范指纹 `ce3d975a…513d39e2`。聚合为 `2 -> 1`、Duplicate Rate=`0.5`、False Positive=0、Case Pass=true，总计 3637 Tokens、约 7.83 秒。
 - 本次两个 Agent 均输出 `security/high`，所以 Conflict=0；此前一次 Conflict 没有复现，不能猜测旧冲突字段。两个 Agent 的 `unique_finding_count` 都为 0，因此本案例证明的是真实 Provider 下的去重与可追溯性，不证明多 Agent 提升 Recall。运行绑定已提交代码，但因个人文档使 `git_dirty=true`，且只运行已见 Seed 单案例，所以仍不是 baseline。
+- `aggregation-v1` 相邻缺陷案例首次真实运行绑定 commit `2991ae8`：Correctness 发现路径穿越和资源泄漏，Security 也发现路径穿越，两个目标缺陷均命中且标签正确；Identity v2 没有合并路径穿越复述，最终 `3 -> 3`、False Positive=1、Case Pass=false，总计 4643 Tokens、约 13.07 秒。这是 Identity v3 的真实失败输入来源，但 v3 尚未真实重验。
 
 ---
 
@@ -2493,7 +2525,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交后选择 `aggregation-v1` 中的低成本案例做真实 DeepSeek partial trial；
+1. 提交 Finding Identity v3 后重跑同一个相邻缺陷 DeepSeek partial trial；
 2. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
 3. 再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget。
 

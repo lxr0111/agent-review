@@ -1,6 +1,6 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：Finding Identity v2 已通过真实多 Agent 重验，尚未实现生产链路
+> 状态：Finding Identity v3 已完成自动化修复，等待真实多 Agent 重验，尚未实现生产链路
 > 更新时间：2026-09-27
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
@@ -580,13 +580,13 @@ ReviewContext
 
 生产链路仍通过一个 General Agent 和 `PassthroughReviewAggregator` 调用一次模型；上面的多 Agent 流程只存在于 Eval，不改变数据库和 GitHub 发布行为。
 
-自动化验收结果为 278 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。除 Identity v2 的同义输出和不同问题边界外，测试现在还覆盖原始 Agent Findings、kept/merged 决策、Category/Severity 冲突明细和历史 baseline 兼容。
+自动化验收结果为 289 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。测试覆盖 Identity v2/v3 的真实同义输出、相同代码上的不同根因、原始 Agent Findings、kept/merged 决策、Category/Severity 冲突明细、聚合挑战集和历史 baseline 兼容。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
 真实 DeepSeek 多 Agent SQL 注入试跑形成了三个阶段的 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出；Identity v2 在 commit `dd95c4b` 上完成 `2 -> 1` 合并并恢复 Case Pass；聚合审计版本在 commit `5d2e66d` 上进一步记录两份原始 Findings、Security `kept`、Correctness `merged` 和共同规范指纹。第三次结果为 False Positive=0、Case Pass=true、3637 Tokens、约 7.83 秒。三次都只执行已见 Seed 单案例，且工作区因个人文档显示 dirty，所以不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并通过真实 DeepSeek SQL 注入案例验证新格式。下一步增加混合缺陷、相邻但不同根因 Finding 和标签冲突案例。之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并拥有混合缺陷聚合挑战集。下一步先提交 Identity v3，再用相同路径/资源案例做真实重验；之后设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
 
 ## 17. 聚合审计快照
 
@@ -620,3 +620,19 @@ Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 
 复杂场景还对 Correctness、Security、Performance 三个结果的全部排列做了验证，最终 Report、Decisions、Conflicts 和 Source Roles 均保持一致。现有 Aggregator 通过挑战，因此本批没有调整 Identity 阈值或生产逻辑。
 
 这批证据全部来自自动化测试，没有调用 DeepSeek。`aggregation-v1` 已被开发过程看到，不能作为泛化质量证明；后续真实 partial trial 也需要明确记录 Token、Latency、Git 状态和 partial 非 baseline 边界。
+
+## 19. Finding Identity v3
+
+`aggregation-adjacent-path-and-resource` 的第一次真实 DeepSeek 运行暴露了 v2 的新漏合并。Correctness 输出“Unvalidated filename allows escaping the upload root”，Security 输出“Path traversal / arbitrary file read in read_upload”；两者引用相同 ``UPLOAD_ROOT / filename``，Category/Severity 也同为 `security/high`，但标题词汇差异过大，导致聚合结果为 `3 -> 3`，其中一条路径穿越成为评测 False Positive。
+
+Identity v3 保留旧规则，并增加 Explanation fallback：
+
+- 文件必须相同；
+- 两段 Explanation 必须包含完全相同且足够长的 inline code span；
+- 移除 inline code 后，必须至少共享四个非通用根因信号词；
+- 还必须共享一个连续的 prose signal bigram；
+- Category、Severity、Confidence 和 Suggestion 不参与判断。
+
+真实输出被固化为端到端 Eval 回归：三条原始 Finding 聚合为路径穿越和资源泄漏两条，Security 路径 Finding 被保留，Correctness 路径 Finding 被合并，Correctness 的资源 Finding 保持独有。SQL 注入/缺少索引与路径穿越/资源泄漏反例继续证明相同代码证据本身不足以触发合并。
+
+修复前真实试跑绑定 commit `2991ae8`，使用 4643 Tokens、约 13.07 秒，Recall=1.0 但 Case Pass=false。v3 当前只通过自动化测试，尚未重新调用真实 DeepSeek；提交后需要使用同一 Dataset SHA 和 Case ID 重验，才能确认真实输出下恢复 `3 -> 2`。

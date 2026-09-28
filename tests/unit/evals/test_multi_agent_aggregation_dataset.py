@@ -295,6 +295,88 @@ def test_adjacent_issues_with_shared_code_evidence_remain_distinct() -> None:
     )
 
 
+def test_live_path_paraphrases_merge_without_hiding_resource_finding() -> None:
+    provider = _ScriptedRoleProvider(
+        {
+            "review-correctness-v1": _output(
+                _finding(
+                    title="Unvalidated filename allows escaping the upload root",
+                    explanation=(
+                        "`UPLOAD_ROOT / filename` performs no validation of `filename`. "
+                        "A relative value containing `..` resolves outside `/srv/uploads`, "
+                        "and because `pathlib` replaces the base when the right operand is "
+                        "absolute, a filename such as `/etc/passwd` ignores `UPLOAD_ROOT` "
+                        "entirely. The function can be used to read arbitrary files readable "
+                        "by the process."
+                    ),
+                    suggestion="Resolve the candidate and enforce upload-root containment.",
+                    file_path="src/uploads.py",
+                    category=FindingCategory.SECURITY,
+                    severity=FindingSeverity.HIGH,
+                    confidence=0.90,
+                ),
+                _finding(
+                    title="File handle is never closed",
+                    explanation=(
+                        "`handle = open(UPLOAD_ROOT / filename, 'rb')` is read from and "
+                        "then abandoned; there is no close and no context manager. Repeated "
+                        "calls can exhaust file descriptors."
+                    ),
+                    suggestion="Use a with open context manager.",
+                    file_path="src/uploads.py",
+                    category=FindingCategory.RELIABILITY,
+                    severity=FindingSeverity.MEDIUM,
+                    confidence=0.85,
+                ),
+            ),
+            "review-security-v1": _output(
+                _finding(
+                    title="Path traversal / arbitrary file read in read_upload",
+                    explanation=(
+                        "`UPLOAD_ROOT / filename` performs no containment check. An "
+                        "absolute value such as `/etc/passwd` discards the root entirely, "
+                        "while relative traversal resolves outside `/srv/uploads`. Both let "
+                        "a caller read arbitrary readable files as the service account."
+                    ),
+                    suggestion="Resolve the candidate and enforce upload-root containment.",
+                    file_path="src/uploads.py",
+                    category=FindingCategory.SECURITY,
+                    severity=FindingSeverity.HIGH,
+                    confidence=0.95,
+                )
+            ),
+        }
+    )
+
+    result = evaluate_multi_agent_case(
+        _case("aggregation-adjacent-path-and-resource"),
+        _orchestrator(provider),
+    )
+
+    assert result.case_pass is True
+    assert result.pre_aggregation_finding_count == 3
+    assert result.post_aggregation_finding_count == 2
+    assert result.merged_finding_count == 1
+    assert result.false_positive_count == 0
+    assert result.aggregation_conflicts == ()
+    assert {finding.category for finding in result.actual_findings} == {
+        FindingCategory.SECURITY,
+        FindingCategory.RELIABILITY,
+    }
+    assert {
+        contribution.role: (
+            contribution.raw_finding_count,
+            contribution.kept_finding_count,
+            contribution.merged_finding_count,
+            contribution.unique_finding_count,
+        )
+        for contribution in result.agent_contributions
+    } == {
+        AgentRole.CORRECTNESS: (2, 1, 1, 1),
+        AgentRole.SECURITY: (1, 1, 0, 0),
+    }
+
+
 def test_cross_file_case_records_only_specialist_unique_contributions() -> None:
     provider = _ScriptedRoleProvider(
         {
