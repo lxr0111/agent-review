@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
-> 最后更新：2026-09-30
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到多 Agent 架构实验工件与离线对照框架完成。
+> 最后更新：2026-10-01
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到首个 Security 架构对照 Holdout 冻结完成。
 
 ## 1. 这份文档的用途
 
@@ -2456,6 +2456,37 @@ Identity v3 真实重验绑定 commit `06cedad`，Dataset SHA 保持不变。Cor
 
 相同 `git_dirty=true` 只能说明三次运行都有未提交改动，不能证明未提交内容完全相同，因此正式对照应使用干净提交。评测工件可能包含模型生成的短代码引用，应按普通 Review 输出管理，不能当作无敏感信息的纯指标文件。本批没有实现 Planner 自动选择“单专业 Agent”的批量路由，新 Holdout 可以先按冻结的案例域逐案例选择明确角色；也没有允许多 Agent 工件成为正式 baseline。
 
+### 6.13 Security 架构对照 Holdout v1
+
+#### 要解决的问题
+
+此前多 Agent 的真实试跑都来自已经参与开发的 Seed 或 Aggregation 案例，能够证明链路、去重和审计，但不能证明架构在新输入上的泛化收益。与此同时，三架构比较器要求单专业工件对应一个明确角色，因此把 Security、Performance、Maintainability 混在同一数据集会使“单专业 Agent”基线失去清晰含义。
+
+#### 设计选择与行为变化
+
+- 新增 `architecture-security-holdout-v1` 四案例冻结分片，所有案例都只路由 Correctness 与 Security；
+- 一个混合案例同时包含 API Key 前缀认证绕过和剩余有效期方向错误，用于观察两个专业角色是否产生互补召回；
+- 两个纯 Security 案例分别覆盖管理员字段 Mass Assignment 和登录后 Open Redirect；
+- 一个 Negative 使用 `hmac.compare_digest` 比较完整 Webhook Secret，用于观察 General、Security 和 Multi-Agent 的误报；
+- Expected Finding 共四条：Security 三条、Correctness 一条；Severity 为两条 High、两条 Medium；
+- Dataset SHA 固定为 `ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e`。
+
+#### 自动化验证证据
+
+冻结测试验证 Dataset Version/SHA、案例数、负例数、Finding Category/Severity 分布、Expected Range 位于新增行内，以及新 Case ID、Head SHA、Patch 与已有四套数据集不重复。Planner 对四个案例均稳定输出 `correctness + security`。General、Security 和 Planned Multi-Agent 的 Mock 路径均 4/4 Case Pass、Recall=1.0、False Positive=0、Usage=null；Multi-Agent 自测执行 8 次 Agent 调用并从 8 条 Fixture Finding 聚合为 4 条。Mock 结果只证明评测器与聚合器自洽，不证明模型质量。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub。数据集在第一次 live 输出之前完成标签、范围、Matcher 关键词和 SHA 冻结；真实三架构结果必须在本批提交之后运行并单独记录。
+
+#### 面试怎么讲
+
+> 我没有继续用已经调过规则的 Seed 案例证明多 Agent 更好，而是先冻结一个角色一致的新 Security 分片。它既有跨角色混合缺陷，也有纯安全缺陷和安全负例；在模型运行前就固定答案和 SHA。这样后续 General、Security-only 和 Planned Multi-Agent 的差异可以同时从召回、误报、Token、延迟和角色独有贡献解释，而不会因为看过输出后修改标准污染结论。
+
+#### 准确边界与尚未完成
+
+这是四案例的 Security 分片，不代表所有语言、框架或漏洞类型，也不能外推生产准确率。Expected Finding 由项目开发者构造而非多位安全专家独立标注。第一次 live 结果之后不应修改本版本的 Prompt、Planner、Matcher、标签或 Fixture；若发现数据缺陷，应保留 v1 证据并创建修正版。Performance 和 Maintainability 仍需要独立的新分片。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2515,14 +2546,15 @@ Identity v3 真实重验绑定 commit `06cedad`，Dataset SHA 保持不变。Cor
 | 多缺陷聚合挑战集 | 286 | 四类混合案例、角色脚本冲突、独有贡献、负例和复杂输入顺序稳定性 |
 | Finding Identity v3 | 289 | 真实路径穿越复述回归、Explanation 根因 fallback 和相同代码不同根因保护 |
 | 架构实验工件与离线对照 | 301 | 不可覆盖工件、Provider 前置失败、三架构身份门禁、逐案例解释和旧 baseline 兼容 |
+| Security 架构 Holdout v1 | 306 | 四个新案例、冻结 SHA、历史数据隔离、Planner 路由、三模式 Mock 自测和 Negative 约束 |
 
 当前最近一次结果：
 
 ```text
-Targeted artifact/comparison/runner tests: 40 passed
-All tests: 301 passed, 2 third-party deprecation warnings
+Targeted architecture Security holdout tests: 5 passed
+All tests: 306 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (100 source files)
+mypy app/evals plus new dataset test: passed (101 source files)
 git diff --check: passed
 ```
 
@@ -2560,9 +2592,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 建立并冻结新的未见案例，提交后用实验工件比较 General、单专业 Agent 与 Planned Multi-Agent；
-2. 根据对照结果判断多 Agent 是否达到质量/成本门槛，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
-3. 满足质量、成本和恢复门槛后，再考虑接入生产 Worker。
+1. 提交已冻结的 Security Holdout，在干净工作区运行 General、Security 与 Planned Multi-Agent 三份真实工件并离线比较；
+2. 保留首次结果，再决定是否建立 Performance/Maintainability 分片；根据对照结果判断多 Agent 是否达到质量/成本门槛；
+3. 达到门槛后再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget，最后考虑接入生产 Worker。
 
 ### 9.2 后续能力
 

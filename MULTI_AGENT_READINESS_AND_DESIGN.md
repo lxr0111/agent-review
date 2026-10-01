@@ -1,7 +1,7 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：已具备可保存、可校验的三架构 Eval 对照框架，尚未执行新 Holdout 对照或实现生产链路
-> 更新时间：2026-09-30
+> 状态：首个 Security 架构对照 Holdout 已冻结，尚未执行真实对照或实现生产链路
+> 更新时间：2026-10-01
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
 ## 1. 文档目的
@@ -654,4 +654,14 @@ v3 真实重验绑定 commit `06cedad` 和相同 Dataset SHA：Correctness 只�
 
 报告保留既有 Recall、Precision、F1、False Positive、Case Pass、Category/Severity、Schema、错误数、Latency 和 Token 对比，同时增加多 Agent 相对 General 的命中、误报、Token、平均延迟增量，以及每额外 1000 Token 的命中增量、调用数和角色独有贡献。每个案例还给出 `improved/regressed/mixed/unchanged` 状态及命中、误报、漏报和标签变化原因，避免只看总分掩盖局部退化。
 
-这仍只是实验基础设施，不是多 Agent 质量结论。相同 dirty 标志不能证明未提交内容相同，正式对照应绑定干净 commit；工件中的模型输出可能引用代码，应按 Review 数据管理。下一步是创建并冻结新的未见案例，在不根据结果继续调 Prompt、Matcher 或 Planner 的前提下执行三种架构，然后再决定是否值得进入 Agent Execution 持久化阶段。
+这仍只是实验基础设施，不是多 Agent 质量结论。相同 dirty 标志不能证明未提交内容相同，正式对照应绑定干净 commit；工件中的模型输出可能引用代码，应按 Review 数据管理。首个 `architecture-security-holdout-v1` 已在真实运行前冻结，下一步是在不根据结果调 Prompt、Matcher、Planner 或标签的前提下执行三种架构，然后再决定是否值得进入 Agent Execution 持久化阶段。
+
+## 21. Security 架构对照 Holdout v1
+
+首个新对照分片包含四个此前未使用的 Security 域案例：API Key 前缀认证与有效期显示的混合缺陷、管理员字段 Mass Assignment、登录 Open Redirect，以及正确使用 `compare_digest` 的 Secret Negative。共四条 Expected Finding，其中 Security 三条、Correctness 一条；所有案例由现有确定性 Planner 路由为 Correctness + Security。
+
+选择领域分片而不是混合所有专业类别，是为了让单专业对照始终有同一个明确角色：完整数据集可以分别交给 General、Security-only 和 Planned Multi-Agent，避免根据每个案例答案临时选择“最佳 Specialist”。混合案例用于测量角色互补，纯 Security 案例用于比较专业聚焦，Negative 用于约束误报。
+
+数据集 SHA 为 `ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e`。冻结测试还保证新 Case ID、Head SHA 和 Patch 与现有 Seed、Holdout v1/v2、Aggregation 数据不重叠。默认 Mock 三模式全部通过且 Usage 为 null，只构成评测管道自动化证据。当前全量自动化结果为 306 项测试通过，Ruff 通过，mypy 对本批检查的 101 个源码/测试文件通过。
+
+本批没有运行真实 DeepSeek。提交后需要在干净 worktree 上生成三份不可覆盖工件，再用离线比较器输出质量、错误、Token、延迟、逐案例变化和 Agent 贡献。第一次 live 结果无论好坏都应保留；若发现 Fixture 缺陷，应创建 v2 而不是重写 v1。

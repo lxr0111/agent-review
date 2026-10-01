@@ -1,0 +1,173 @@
+{
+  "schema_version": "review-eval-v1",
+  "dataset_version": "architecture-security-holdout-v1",
+  "cases": [
+    {
+      "id": "architecture-security-api-key-prefix-and-lifetime",
+      "description": "An API-key helper accepts credential prefixes while a separate display helper reports the remaining lifetime with the subtraction reversed.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval",
+        "number": 301,
+        "title": "Add API key validation and lifetime display",
+        "body": "API keys are non-empty opaque credentials. Both timestamps are timezone-aware and use the same timezone. The UI displays positive seconds while a valid key remains active.",
+        "base_sha": "base-architecture-api-key-prefix-lifetime",
+        "head_sha": "head-architecture-api-key-prefix-lifetime",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/api_keys.py",
+          "status": "added",
+          "additions": 5,
+          "deletions": 0,
+          "changes": 5,
+          "patch": "@@ -0,0 +1,5 @@\n+def api_key_matches(provided_key, expected_key):\n+    return expected_key.startswith(provided_key)\n+\n+def seconds_until_expiry(expires_at, now):\n+    return int((now - expires_at).total_seconds())",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "api-key-prefix-accepted",
+          "description": "Using startswith authenticates any non-empty prefix of the expected API key instead of requiring the complete credential.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/api_keys.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 2
+          },
+          "match_terms": [
+            ["api key prefix", "partial api key", "credential prefix", "prefix authentication"],
+            ["startswith", "full key", "exact match", "complete credential"]
+          ]
+        },
+        {
+          "id": "remaining-lifetime-subtraction-reversed",
+          "description": "Subtracting expires_at from now reports a negative lifetime while the key is still valid instead of the positive remaining duration.",
+          "category": "correctness",
+          "severity": "medium",
+          "file_path": "src/api_keys.py",
+          "range": {
+            "start_line": 5,
+            "end_line": 5
+          },
+          "match_terms": [
+            ["subtraction reversed", "reversed subtraction", "wrong subtraction order", "expires at minus now"],
+            ["negative remaining", "negative lifetime", "seconds remaining", "time until expiry"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-admin-mass-assignment",
+      "description": "A profile update copies every request field onto the current user, including the administrator flag.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval",
+        "number": 302,
+        "title": "Allow users to update profile fields",
+        "body": "The payload is request JSON controlled by the signed-in user. Users may edit display_name and timezone only; administrator privileges are managed by a separate internal workflow.",
+        "base_sha": "base-architecture-admin-mass-assignment",
+        "head_sha": "head-architecture-admin-mass-assignment",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/profile_updates.py",
+          "status": "added",
+          "additions": 4,
+          "deletions": 0,
+          "changes": 4,
+          "patch": "@@ -0,0 +1,4 @@\n+def update_profile(current_user, payload):\n+    for field, value in payload.items():\n+        setattr(current_user, field, value)\n+    return current_user",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "profile-mass-assignment-privilege-escalation",
+          "description": "Copying arbitrary request fields onto current_user lets a caller set is_admin and escalate privileges.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/profile_updates.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 3
+          },
+          "match_terms": [
+            ["mass assignment", "arbitrary fields", "unrestricted fields", "allowlist fields"],
+            ["is admin", "administrator privilege", "privilege escalation", "admin flag"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-open-login-redirect",
+      "description": "A post-login handler redirects to a request-controlled destination without restricting it to a trusted origin or local path.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval",
+        "number": 303,
+        "title": "Redirect users after successful login",
+        "body": "next_url comes directly from the login request query string. Authenticated users should return only to a local application path or an explicitly trusted origin.",
+        "base_sha": "base-architecture-open-login-redirect",
+        "head_sha": "head-architecture-open-login-redirect",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/login_redirects.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+from starlette.responses import RedirectResponse\n+\n+def finish_login(current_user, next_url):\n+    if not current_user.is_authenticated:\n+        raise PermissionError('login required')\n+    return RedirectResponse(next_url)",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "unvalidated-post-login-open-redirect",
+          "description": "Redirecting to the unvalidated next_url allows an attacker to send authenticated users to an external phishing destination.",
+          "category": "security",
+          "severity": "medium",
+          "file_path": "src/login_redirects.py",
+          "range": {
+            "start_line": 6,
+            "end_line": 6
+          },
+          "match_terms": [
+            ["open redirect", "unvalidated redirect", "external redirect", "attacker controlled redirect"],
+            ["next url", "trusted origin", "local path", "allowlist destination"]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-negative-constant-time-secret",
+      "description": "A webhook-secret helper rejects empty values and uses a constant-time comparison for the complete credential.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval",
+        "number": 304,
+        "title": "Verify webhook secrets safely",
+        "body": "Webhook secrets are non-empty ASCII tokens loaded from trusted configuration. Compare the complete supplied value without logging or transforming it.",
+        "base_sha": "base-architecture-constant-time-secret",
+        "head_sha": "head-architecture-constant-time-secret",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/webhook_secrets.py",
+          "status": "added",
+          "additions": 6,
+          "deletions": 0,
+          "changes": 6,
+          "patch": "@@ -0,0 +1,6 @@\n+from hmac import compare_digest\n+\n+def webhook_secret_matches(provided_secret, expected_secret):\n+    if not provided_secret or not expected_secret:\n+        return False\n+    return compare_digest(provided_secret, expected_secret)",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": []
+    }
+  ]
+}

@@ -24,6 +24,13 @@ The datasets have different roles:
   cross-file performance/maintainability findings, and a routed negative sample. It is not a
   holdout or model baseline; its purpose is to exercise planning, identity, aggregation audit,
   and contribution metrics before live multi-agent experiments.
+- `review_architecture_security_holdout_v1.json` is the first frozen architecture-comparison
+  shard. Its four previously unused cases cover one mixed security/correctness change, two
+  security-only changes, and one security negative. All four deterministically route to
+  Correctness plus Security, allowing the same complete shard to be evaluated by General,
+  Security-only, and Planned Multi-Agent modes. Its frozen SHA-256 is
+  `ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e`. Do not tune prompts,
+  matchers, planning, labels, or fixtures from its live results; create a new version instead.
 
 The first live `review-v2 + holdout-v1` baseline is checked in as
 `deepseek-flash__review-v2__holdout-v1.json`. Preserve its raw evaluator output. Manual review
@@ -199,6 +206,35 @@ incremental matched-findings-per-1,000-extra-token evidence, and per-case
 files were identical, so clean committed runs remain the standard for a formal comparison.
 Artifact JSON may contain model-generated code excerpts and should be handled like ordinary
 review output. `--output` is rejected with `--save-baseline` and `--plan-only`.
+
+After committing the frozen Security shard and obtaining a clean worktree, collect the first
+complete architecture comparison with:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v1.json `
+  --provider deepseek --live --agent-role general `
+  --output evals/results/security-holdout-general.json
+
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v1.json `
+  --provider deepseek --live --agent-role security `
+  --output evals/results/security-holdout-specialist.json
+
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v1.json `
+  --provider deepseek --live --multi-agent `
+  --output evals/results/security-holdout-multi-agent.json
+
+python -m evals.compare `
+  --general-artifact evals/results/security-holdout-general.json `
+  --specialist-artifact evals/results/security-holdout-specialist.json `
+  --multi-agent-artifact evals/results/security-holdout-multi-agent.json
+```
+
+These are paid live runs and are intentionally not executed by automated tests. The comparison
+must be interpreted as a frozen four-case Security shard, not a production-wide quality or
+latency benchmark.
 
 Run one paid DeepSeek case as a guarded trial:
 
