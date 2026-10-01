@@ -2487,6 +2487,76 @@ Identity v3 真实重验绑定 commit `06cedad`，Dataset SHA 保持不变。Cor
 
 这是四案例的 Security 分片，不代表所有语言、框架或漏洞类型，也不能外推生产准确率。Expected Finding 由项目开发者构造而非多位安全专家独立标注。第一次 live 结果之后不应修改本版本的 Prompt、Planner、Matcher、标签或 Fixture；若发现数据缺陷，应保留 v1 证据并创建修正版。Performance 和 Maintainability 仍需要独立的新分片。
 
+### 6.14 Security Holdout 三架构真实对照
+
+#### 要解决的问题
+
+在冻结 `architecture-security-holdout-v1` 之后，需要用同一模型、同一数据、同一代码提交和同一 Matcher 回答一个具体问题：General Agent、Security Specialist 和 Planned Multi-Agent，哪一种在当前实现下提供了更好的质量/成本平衡。不能用三次终端输出做人工印象比较，也不能因为多 Agent 架构更复杂就预设它一定更好。
+
+#### 设计选择与实验控制
+
+- 三次运行都使用 `deepseek-flash`、`text-v2` Matcher 和同一冻结 Dataset；
+- Dataset Version 为 `architecture-security-holdout-v1`，SHA-256 为 `ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e`；
+- 三份工件都绑定干净提交 `e2d4b2ce2c3f4a448056e33b871ccd903ae63c09`，`git_dirty=false`；
+- General 使用 `review-v2`，单专业架构使用 `review-security-v1`，多 Agent 使用 `multi-agent-v1` 和 `finding-text-v3`；
+- 三种模式都执行相同 4 个 Case，多 Agent 共执行 8 次 Agent 调用；
+- 工件保存在 Git 已忽略的 `evals/results/`，不会冒充正式 Model Baseline，也不提交模型原始输出；
+- 对照由离线 Comparator 完成，没有再次调用模型、数据库或 GitHub。
+
+#### 自动化验证证据
+
+本批只记录此前已实现实验工具产生的真实结果，没有修改生产代码或测试代码，因此没有新增自动化测试数量。Comparator 成功通过 Provider、Model、Dataset Version/SHA、Matcher Version、Git Commit、Dirty 状态和 Case ID 集合的一致性门禁；三份工件均可离线解析和比较。文档修改完成后只执行文本格式与 Git 差异检查，不把它们表述为新的模型质量证据。
+
+#### 真实 DeepSeek 对照结果
+
+三种架构均为 4/4 `successful_case`，Schema Validity 均为 `1.0`，没有 Transport、Provider 或 Schema Error。
+
+| 架构 | Recall | Precision | F1 | Case Pass | False Positive | Category Match | Severity Match | Total Tokens | Mean Latency |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| General Agent | 1.0 | 1.0 | 1.0 | 0.75 | 0 | 1.0 | 0.75 | 8,381 | 5,639.12 ms |
+| Security Specialist | 0.75 | 1.0 | 0.8571 | 0.75 | 0 | 1.0 | 0.6667 | 7,211 | 3,871.84 ms |
+| Planned Multi-Agent | 1.0 | 0.8 | 0.8889 | 0.75 | 1 | 1.0 | 0.75 | 18,126 | 11,267.44 ms |
+
+与 General 相比，Security Specialist 少使用 1,170 Tokens、平均延迟降低约 1.77 秒，但少召回一条混合案例中的 Correctness Finding。Planned Multi-Agent 没有增加命中数或 Case Pass，反而增加 1 条 False Positive、9,745 Tokens 和约 5.63 秒平均延迟；每额外 1,000 Tokens 带来的净新增命中为 0。
+
+#### 逐案例解释
+
+1. **管理员字段 Mass Assignment**：三种架构都命中唯一目标 Finding，标签正确且无误报。多 Agent 中 Correctness 与 Security 报告同一根因，Aggregator 正确合并。
+2. **API Key 前缀认证与有效期方向错误**：General 同时命中两条目标 Finding；Security Specialist 只报告职责范围内的认证绕过，因此漏掉 Correctness Finding。多 Agent 恢复两条目标召回，但保留了一条额外 Security Finding，并把认证绕过评为 `critical` 而不是 Expected `high`。
+3. **登录 Open Redirect**：General 找到问题但评为 `high`，Expected 为 `medium`；Security Specialist 给出正确的 `security/medium`。多 Agent 聚合时选择 Security 标签和严重程度，使该案例相对 General 得到改善。
+4. **常量时间 Webhook Secret 负例**：三种架构均返回 0 Finding，没有负例误报。
+
+#### 多 Agent 误报定位
+
+混合 API Key 案例中，Correctness Agent 正确报告 `seconds_until_expiry` 使用 `now - expires_at`，导致 UI 剩余时间符号反转。Security Agent 针对同一表达式额外推测：“如果下游把非负值当成仍然有效，可能继续接受过期凭证”。但 Fixture 明确提供的是 UI 展示契约，没有证据说明该 helper 参与鉴权或有效期强制执行，因此该安全影响属于基于未提供调用场景的推测。
+
+Aggregator 没有把这条 Security 描述与 Correctness 的有效期方向错误识别为同一问题，最终同一行代码保留两条 Finding。这里同时暴露两个独立改进点：
+
+- Specialist Prompt 的“不得推测未提供的下游调用场景”约束仍可能失效；
+- Finding Identity v3 对“相同代码根因、不同影响叙述”的识别仍不稳定。
+
+不能简单把 Identity 阈值继续放宽，因为同一表达式上也可能存在多个真实根因。更稳妥的后续方向是加入证据约束或最终仲裁，区分“相同根因的复述”和“缺少代码证据的影响推测”。
+
+#### 工程结论与行为决策
+
+本轮没有证明多 Agent 优于 General。当前 Security 分片上，General 在 Recall、Precision、F1 和总成本之间表现最好；Security Specialist 更快、更省 Token，但不适合单独处理包含跨领域缺陷的 PR；Planned Multi-Agent 展现了角色互补和标签仲裁价值，但这些收益尚不足以抵消误报、Token 和延迟成本。
+
+因此生产 Worker 继续保持单 General Agent，不把 eval-only Planned Multi-Agent 接入真实 PR 主链路。下一批优先处理证据约束与聚合仲裁，再用新的冻结分片重新评估；并发执行只能改善墙钟延迟，不能解决 Token 增长或误报，因此不作为当前第一优先级。
+
+#### 面试怎么讲
+
+> 我没有为了证明多 Agent 更先进而只展示成功案例，而是在模型运行前冻结了一个 Security Holdout，并让 General、Security-only 和 Planned Multi-Agent 在同一模型、同一 Dataset SHA、同一 Git Commit 下运行。结果 General 的 Recall、Precision 和 F1 都是 100%；多 Agent 保持 100% Recall，但 Precision 降到 80%，Token 从 8,381 增加到 18,126，平均延迟从约 5.64 秒增加到 11.27 秒。进一步审计发现，额外误报来自 Security Agent 推测了数据中没有提供的下游鉴权用途，同时聚合器没有把它和同一代码根因的 Correctness Finding 对齐。因此我没有把多 Agent 接入生产，而是把证据约束和最终仲裁作为下一步。这体现的是用可复现实验决定架构，而不是先选复杂架构再寻找支持结论。
+
+#### 准确边界与尚未完成
+
+- 这只是 4 个 Security 案例的一次真实运行，样本量不足以外推生产准确率或随机稳定性；
+- Expected Severity 由项目开发者设定，`high/critical` 等边界存在业务语境差异；
+- 多 Agent 当前按顺序执行，平均延迟包含多个 Agent 调用的累计时间，尚未验证并发执行收益；
+- Cost 仍为 `null`，没有在 Provider 中硬编码价格，也不从 Token 擅自推算费用；
+- `unique_finding_count` 表示多 Agent 内部聚合后的角色独有项，不代表相对 General 的净新增有效缺陷；
+- 本次结果不修改冻结 Dataset、Prompt、Matcher 或标签；若后续人工审计认为 Ground Truth 有问题，应保留 v1 并创建新版本；
+- Performance 和 Maintainability 架构分片尚未建设，证据约束/仲裁、并发、预算和 Agent Execution 持久化也尚未完成。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2585,6 +2655,7 @@ git diff --check: passed
 - 本次两个 Agent 均输出 `security/high`，所以 Conflict=0；此前一次 Conflict 没有复现，不能猜测旧冲突字段。两个 Agent 的 `unique_finding_count` 都为 0，因此本案例证明的是真实 Provider 下的去重与可追溯性，不证明多 Agent 提升 Recall。运行绑定已提交代码，但因个人文档使 `git_dirty=true`，且只运行已见 Seed 单案例，所以仍不是 baseline。
 - `aggregation-v1` 相邻缺陷案例首次真实运行绑定 commit `2991ae8`：Correctness 发现路径穿越和资源泄漏，Security 也发现路径穿越，两个目标缺陷均命中且标签正确；Identity v2 没有合并路径穿越复述，最终 `3 -> 3`、False Positive=1、Case Pass=false，总计 4643 Tokens、约 13.07 秒。这是 Identity v3 的真实失败输入来源，但 v3 尚未真实重验。
 - Identity v3 真实重验绑定 commit `06cedad`：Correctness 独立发现资源泄漏，Security 独立发现路径穿越，最终 `2 -> 2`、两者 `unique_finding_count=1`、False Positive=0、Case Pass=true，总计 4044 Tokens、约 9.43 秒。此次没有生成重复路径 Finding，因此证明了真实链路和不同根因保留，但不构成新 fallback 的 live 合并证据；fallback 由修复前真实输出回放测试覆盖。运行仍为 dirty-worktree 单案例 partial trial，不是 baseline。
+- Security 三架构正式对照绑定干净提交 `e2d4b2c` 和冻结 Dataset SHA `ef6c5dc7…1873e`：General、Security Specialist、Planned Multi-Agent 均完成 4/4 合法响应且无链路错误。General 为 Recall/Precision/F1=`1.0/1.0/1.0`、0 False Positive、8,381 Tokens、平均 5.64 秒；Security Specialist 为 `0.75/1.0/0.8571`、7,211 Tokens、平均 3.87 秒；Multi-Agent 为 `1.0/0.8/0.8889`、1 False Positive、18,126 Tokens、平均 11.27 秒。本分片没有证明多 Agent 相对 General 的净质量收益，因此生产路径保持 General。
 
 ---
 
@@ -2592,9 +2663,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交已冻结的 Security Holdout，在干净工作区运行 General、Security 与 Planned Multi-Agent 三份真实工件并离线比较；
-2. 保留首次结果，再决定是否建立 Performance/Maintainability 分片；根据对照结果判断多 Agent 是否达到质量/成本门槛；
-3. 达到门槛后再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget，最后考虑接入生产 Worker。
+1. 针对本次混合 API Key 案例设计证据约束与聚合仲裁，拒绝缺少已提供代码/契约依据的下游影响推测，并避免把同一根因重复发布；
+2. 保留 Security Holdout v1 首次结果不变，增加确定性回归后再建立独立的 Performance/Maintainability 冻结分片，验证结论是否跨领域成立；
+3. 只有质量/成本门槛达到后，才设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget，最后考虑接入生产 Worker。
 
 ### 9.2 后续能力
 
