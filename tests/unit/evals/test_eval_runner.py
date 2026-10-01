@@ -8,6 +8,7 @@ import pytest
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
 from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
 from app.services.review_agent import AgentRole
+from evals.artifacts import load_evaluation_artifact
 from evals.baseline import GitState
 from evals.matcher import CURRENT_MATCHER_VERSION
 from evals.runner import (
@@ -235,6 +236,24 @@ def test_baseline_output_and_allow_dirty_require_save_flag() -> None:
         validate_run_mode(provider="deepseek", live=True, allow_dirty=True)
 
 
+def test_evaluation_output_is_separate_from_baseline_and_plan_modes() -> None:
+    with pytest.raises(UnsafeEvaluationModeError, match="mutually exclusive"):
+        validate_run_mode(
+            provider="deepseek",
+            live=True,
+            save_baseline=True,
+            output=Path("experiment.json"),
+        )
+
+    with pytest.raises(UnsafeEvaluationModeError, match="plan-only"):
+        validate_run_mode(
+            provider="mock",
+            live=False,
+            plan_only=True,
+            output=Path("experiment.json"),
+        )
+
+
 def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
     dataset = load_dataset(DATASET_PATH)
     case = dataset.cases[0]
@@ -357,6 +376,33 @@ def test_default_cli_ignores_real_provider_environment(monkeypatch, capsys) -> N
     assert payload["metrics"]["total_cases"] == 10
 
 
+def test_mock_cli_can_save_non_baseline_artifact(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    output = tmp_path / "mock-experiment.json"
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(DATASET_PATH),
+            "--max-cases",
+            "1",
+            "--output",
+            str(output),
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    artifact = load_evaluation_artifact(output)
+
+    assert exit_code == 0
+    assert payload["is_model_baseline"] is False
+    assert artifact.evaluation.executed_case_count == 1
+    assert artifact.evaluation.provider == "mock"
+    assert f"artifact_saved={output}" in captured.err
+
+
 def test_mock_multi_agent_cli_does_not_create_real_provider(monkeypatch, capsys) -> None:
     provider_factory = Mock()
     git_state_collector = Mock()
@@ -448,6 +494,36 @@ def test_unknown_live_case_is_rejected_before_provider_creation(monkeypatch) -> 
                 "--live",
                 "--case-id",
                 "missing-case",
+            ]
+        )
+
+    git_state_collector.assert_not_called()
+    provider_factory.assert_not_called()
+
+
+def test_existing_live_artifact_is_rejected_before_provider_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "existing.json"
+    output.write_text("already here", encoding="utf-8")
+    provider_factory = Mock()
+    git_state_collector = Mock()
+    monkeypatch.setattr("evals.runner.collect_git_state", git_state_collector)
+    monkeypatch.setattr("evals.runner._create_deepseek_provider", provider_factory)
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--dataset",
+                str(DATASET_PATH),
+                "--provider",
+                "deepseek",
+                "--live",
+                "--max-cases",
+                "1",
+                "--output",
+                str(output),
             ]
         )
 

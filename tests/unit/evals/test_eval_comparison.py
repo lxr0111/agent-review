@@ -14,6 +14,9 @@ from evals.comparison import (
 )
 
 BASELINE_PATH = Path("evals/baselines/deepseek-flash__review-v1__seed-v1.json")
+PROMPT_V2_BASELINE_PATH = Path(
+    "evals/baselines/deepseek-flash__review-v2__seed-v1.json"
+)
 
 
 def _candidate_with_less_noise(baseline: ModelBaseline) -> ModelBaseline:
@@ -71,6 +74,19 @@ def test_checked_in_deepseek_baseline_loads_with_derived_quality_metrics() -> No
         metric.status == DeltaStatus.UNCHANGED
         for metric in comparison.metrics.values()
     )
+
+
+def test_baseline_comparison_allows_prompt_versions_from_different_commits() -> None:
+    baseline = load_model_baseline(BASELINE_PATH)
+    candidate = load_model_baseline(PROMPT_V2_BASELINE_PATH)
+
+    assert baseline.evaluation.git_commit != candidate.evaluation.git_commit
+
+    comparison = compare_model_baselines(baseline, candidate)
+
+    assert comparison.baseline.prompt_version == "review-v1"
+    assert comparison.candidate.prompt_version == "review-v2"
+    assert comparison.metrics["false_positives"].status == DeltaStatus.IMPROVED
 
 
 def test_comparison_reports_metric_and_per_case_finding_changes() -> None:

@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict
 from app.domain.review.report import FindingCategory, FindingSeverity
 from app.services.review_agent import AgentRole
 from evals.baseline import ModelBaseline
-from evals.metrics import CaseEvaluation, EvaluatedFinding, EvaluationRun
+from evals.metrics import (
+    CaseEvaluation,
+    EvaluatedFinding,
+    EvaluationExecutionMode,
+    EvaluationRun,
+)
 
 MIN_FINDING_SIMILARITY = 0.30
 
@@ -40,6 +45,26 @@ class BaselineDescriptor(BaseModel):
     agent_role: AgentRole
     dataset_version: str
     dataset_sha256: str
+    git_commit: str
+    git_dirty: bool
+    executed_at: datetime
+
+
+class EvaluationDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    model_name: str | None
+    prompt_version: str
+    execution_mode: EvaluationExecutionMode
+    agent_role: AgentRole | None
+    finding_identity_version: str | None
+    matcher_version: str
+    dataset_version: str
+    dataset_sha256: str
+    dataset_case_count: int
+    executed_case_count: int
+    case_ids: tuple[str, ...]
     git_commit: str
     git_dirty: bool
     executed_at: datetime
@@ -100,6 +125,15 @@ class BaselineComparison(BaseModel):
     cases: tuple[CaseComparison, ...]
 
 
+class EvaluationRunComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reference: EvaluationDescriptor
+    candidate: EvaluationDescriptor
+    metrics: dict[str, MetricComparison]
+    cases: tuple[CaseComparison, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class _MetricSpec:
     baseline: float | None
@@ -120,30 +154,52 @@ def compare_model_baselines(
 ) -> BaselineComparison:
     baseline_evaluation = baseline.evaluation
     candidate_evaluation = candidate.evaluation
-    _validate_comparable(baseline_evaluation, candidate_evaluation)
-
-    baseline_cases = {case.case_id: case for case in baseline_evaluation.cases}
-    candidate_cases = {case.case_id: case for case in candidate_evaluation.cases}
-    case_comparisons = tuple(
-        _compare_case(baseline_cases[case_id], candidate_cases[case_id])
-        for case_id in sorted(baseline_cases)
+    _validate_comparable_baselines(baseline_evaluation, candidate_evaluation)
+    comparison = _build_evaluation_comparison(
+        baseline_evaluation,
+        candidate_evaluation,
     )
     return BaselineComparison(
         comparison_schema_version="agent-review-baseline-comparison-v1",
         baseline=_descriptor(baseline_evaluation),
         candidate=_descriptor(candidate_evaluation),
-        metrics={
-            name: _metric_comparison(spec)
-            for name, spec in _metric_specs(
-                baseline_evaluation,
-                candidate_evaluation,
-            ).items()
-        },
-        cases=case_comparisons,
+        metrics=comparison.metrics,
+        cases=comparison.cases,
     )
 
 
-def _validate_comparable(baseline: EvaluationRun, candidate: EvaluationRun) -> None:
+def compare_evaluation_runs(
+    reference: EvaluationRun,
+    candidate: EvaluationRun,
+) -> EvaluationRunComparison:
+    _validate_comparable_runs(reference, candidate)
+    return _build_evaluation_comparison(reference, candidate)
+
+
+def _build_evaluation_comparison(
+    reference: EvaluationRun,
+    candidate: EvaluationRun,
+) -> EvaluationRunComparison:
+    reference_cases = {case.case_id: case for case in reference.cases}
+    candidate_cases = {case.case_id: case for case in candidate.cases}
+    return EvaluationRunComparison(
+        reference=_evaluation_descriptor(reference),
+        candidate=_evaluation_descriptor(candidate),
+        metrics={
+            name: _metric_comparison(spec)
+            for name, spec in _metric_specs(reference, candidate).items()
+        },
+        cases=tuple(
+            _compare_case(reference_cases[case_id], candidate_cases[case_id])
+            for case_id in sorted(reference_cases)
+        ),
+    )
+
+
+def _validate_comparable_baselines(
+    baseline: EvaluationRun,
+    candidate: EvaluationRun,
+) -> None:
     for name, evaluation in (("baseline", baseline), ("candidate", candidate)):
         if not evaluation.is_model_baseline:
             raise BaselineComparisonError(f"{name} is not a complete model baseline")
@@ -163,15 +219,92 @@ def _validate_comparable(baseline: EvaluationRun, candidate: EvaluationRun) -> N
         raise BaselineComparisonError("dataset versions do not match")
     if baseline.dataset_sha256 != candidate.dataset_sha256:
         raise BaselineComparisonError("dataset SHA-256 values do not match")
+    _validate_case_ids(baseline, candidate, "baseline", "candidate")
 
-    baseline_case_ids = [case.case_id for case in baseline.cases]
+
+def _validate_comparable_runs(reference: EvaluationRun, candidate: EvaluationRun) -> None:
+    for name, evaluation in (("reference", reference), ("candidate", candidate)):
+        if (
+            evaluation.dataset_sha256 is None
+            or evaluation.git_commit is None
+            or evaluation.git_dirty is None
+            or evaluation.executed_at is None
+        ):
+            raise BaselineComparisonError(f"{name} reproducibility metadata is incomplete")
+        if evaluation.executed_case_count != len(evaluation.cases):
+            raise BaselineComparisonError(
+                f"{name} executed case count does not match its serialized cases"
+            )
+
+    if reference.schema_version != candidate.schema_version:
+        raise BaselineComparisonError("evaluation schema versions do not match")
+    if reference.dataset_version != candidate.dataset_version:
+        raise BaselineComparisonError("dataset versions do not match")
+    if reference.dataset_sha256 != candidate.dataset_sha256:
+        raise BaselineComparisonError("dataset SHA-256 values do not match")
+    if reference.dataset_case_count != candidate.dataset_case_count:
+        raise BaselineComparisonError("dataset case counts do not match")
+    if reference.provider != candidate.provider:
+        raise BaselineComparisonError("evaluation providers do not match")
+    if reference.model_name != candidate.model_name:
+        raise BaselineComparisonError("evaluation model names do not match")
+    if reference.matcher_version != candidate.matcher_version:
+        raise BaselineComparisonError("evaluation matcher versions do not match")
+    if reference.git_commit != candidate.git_commit:
+        raise BaselineComparisonError("evaluation Git commits do not match")
+    if reference.git_dirty != candidate.git_dirty:
+        raise BaselineComparisonError("evaluation worktree states do not match")
+
+    _validate_case_ids(reference, candidate, "reference", "candidate")
+
+
+def _validate_case_ids(
+    reference: EvaluationRun,
+    candidate: EvaluationRun,
+    reference_name: str,
+    candidate_name: str,
+) -> None:
+    reference_case_ids = [case.case_id for case in reference.cases]
     candidate_case_ids = [case.case_id for case in candidate.cases]
-    if len(baseline_case_ids) != len(set(baseline_case_ids)):
-        raise BaselineComparisonError("baseline contains duplicate case IDs")
+    if len(reference_case_ids) != len(set(reference_case_ids)):
+        raise BaselineComparisonError(
+            f"{reference_name} contains duplicate case IDs"
+        )
     if len(candidate_case_ids) != len(set(candidate_case_ids)):
-        raise BaselineComparisonError("candidate contains duplicate case IDs")
-    if set(baseline_case_ids) != set(candidate_case_ids):
-        raise BaselineComparisonError("baseline and candidate case IDs do not match")
+        raise BaselineComparisonError(
+            f"{candidate_name} contains duplicate case IDs"
+        )
+    if set(reference_case_ids) != set(candidate_case_ids):
+        raise BaselineComparisonError(
+            f"{reference_name} and {candidate_name} case IDs do not match"
+        )
+
+
+def _evaluation_descriptor(evaluation: EvaluationRun) -> EvaluationDescriptor:
+    if (
+        evaluation.dataset_sha256 is None
+        or evaluation.git_commit is None
+        or evaluation.git_dirty is None
+        or evaluation.executed_at is None
+    ):
+        raise BaselineComparisonError("evaluation reproducibility metadata is incomplete")
+    return EvaluationDescriptor(
+        provider=evaluation.provider,
+        model_name=evaluation.model_name,
+        prompt_version=evaluation.prompt_version,
+        execution_mode=evaluation.execution_mode,
+        agent_role=evaluation.agent_role,
+        finding_identity_version=evaluation.finding_identity_version,
+        matcher_version=evaluation.matcher_version.value,
+        dataset_version=evaluation.dataset_version,
+        dataset_sha256=evaluation.dataset_sha256,
+        dataset_case_count=evaluation.dataset_case_count,
+        executed_case_count=evaluation.executed_case_count,
+        case_ids=tuple(case.case_id for case in evaluation.cases),
+        git_commit=evaluation.git_commit,
+        git_dirty=evaluation.git_dirty,
+        executed_at=evaluation.executed_at,
+    )
 
 
 def _descriptor(evaluation: EvaluationRun) -> BaselineDescriptor:
@@ -204,6 +337,26 @@ def _metric_specs(
     baseline_metrics = baseline.metrics
     candidate_metrics = candidate.metrics
     return {
+        "successful_cases": _MetricSpec(
+            float(baseline_metrics.successful_cases),
+            float(candidate_metrics.successful_cases),
+            PreferredDirection.HIGHER,
+        ),
+        "transport_errors": _MetricSpec(
+            float(baseline_metrics.transport_errors),
+            float(candidate_metrics.transport_errors),
+            PreferredDirection.LOWER,
+        ),
+        "provider_errors": _MetricSpec(
+            float(baseline_metrics.provider_errors),
+            float(candidate_metrics.provider_errors),
+            PreferredDirection.LOWER,
+        ),
+        "schema_errors": _MetricSpec(
+            float(baseline_metrics.schema_errors),
+            float(candidate_metrics.schema_errors),
+            PreferredDirection.LOWER,
+        ),
         "recall": _MetricSpec(
             baseline_metrics.recall,
             candidate_metrics.recall,

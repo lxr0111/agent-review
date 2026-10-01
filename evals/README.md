@@ -145,6 +145,61 @@ Multi-agent baseline saving remains disabled until the execution and recovery sc
 The live path is sequential in this version, never accesses the database or GitHub, and is not
 used by the production worker.
 
+Save any evaluator run as an immutable experiment artifact with explicit `--output`. This is
+separate from `--save-baseline`: partial and multi-agent runs remain non-baseline experiments,
+and an existing output file is rejected before a real Provider is created and is never
+overwritten. The recommended local directory is ignored by Git:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_aggregation_v1.json `
+  --provider deepseek `
+  --live `
+  --agent-role general `
+  --case-id aggregation-adjacent-path-and-resource `
+  --output evals/results/general.json
+```
+
+Repeat the same committed case for one explicit specialist and Planned Multi-Agent, changing only
+the execution mode and output path:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_aggregation_v1.json `
+  --provider deepseek `
+  --live `
+  --agent-role security `
+  --case-id aggregation-adjacent-path-and-resource `
+  --output evals/results/security.json
+
+python -m evals.runner `
+  --dataset evals/cases/review_aggregation_v1.json `
+  --provider deepseek `
+  --live `
+  --multi-agent `
+  --case-id aggregation-adjacent-path-and-resource `
+  --output evals/results/multi-agent.json
+```
+
+Then compare the three saved artifacts without loading application settings or accessing the
+network, database, GitHub, or an LLM:
+
+```powershell
+python -m evals.compare `
+  --general-artifact evals/results/general.json `
+  --specialist-artifact evals/results/security.json `
+  --multi-agent-artifact evals/results/multi-agent.json
+```
+
+The architecture comparison requires DeepSeek live artifacts with the same provider, model,
+dataset version and SHA-256, matcher, Git commit, worktree dirty flag, and exact case IDs. It
+reports pairwise quality, error, latency and token deltas plus multi-agent contribution,
+incremental matched-findings-per-1,000-extra-token evidence, and per-case
+`improved/regressed/mixed/unchanged` reasons. A matching dirty flag cannot prove that uncommitted
+files were identical, so clean committed runs remain the standard for a formal comparison.
+Artifact JSON may contain model-generated code excerpts and should be handled like ordinary
+review output. `--output` is rejected with `--save-baseline` and `--plan-only`.
+
 Run one paid DeepSeek case as a guarded trial:
 
 ```powershell

@@ -1,7 +1,7 @@
 # AgentReview 项目演进记录与面试讲解指南
 
-> 最后更新：2026-09-28
-> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到 Finding Identity v3 真实链路重验通过。
+> 最后更新：2026-09-30
+> 记录范围：从 `cc5c769 docs: add phase one implementation interview guide` 之后，到多 Agent 架构实验工件与离线对照框架完成。
 
 ## 1. 这份文档的用途
 
@@ -2425,6 +2425,37 @@ Identity v3 真实重验绑定 commit `06cedad`，Dataset SHA 保持不变。Cor
 
 规则仍是词法启发式，不理解任意同义词，也可能遗漏没有共同 inline code span 的重复问题。两次 live 输出不同，因此不能把 Token、延迟或 Case Pass 的变化全部归因于 Identity v3；也不需要为了等待随机重复输出而继续付费重跑。更长期可以引入结构化 `evidence`、行号或规范化 root-cause key，减少对自然语言相似度的依赖。
 
+### 6.12 可复现的多 Agent 架构实验工件与离线对照
+
+#### 要解决的问题
+
+此前 Eval Runner 只把 partial trial 打印到终端。完整单 Agent baseline 可以保存，但多 Agent baseline 被安全门禁禁止，导致 General、单专业 Agent 和 Planned Multi-Agent 的同条件结果需要人工复制，容易丢失元数据，也无法由程序阻止跨 Dataset、跨模型或跨提交误比较。已有 `evals.compare` 只支持两份完整单 Agent baseline，不能表达当前 eval-only 多 Agent 实验。
+
+#### 设计选择与行为变化
+
+- 新增版本化 `EvaluationArtifact`，用显式 `--output` 保存任意 Eval 结果，但不改变 `is_model_baseline`，因此 partial trial 和多 Agent trial 不会被伪装成 baseline；
+- 工件在创建真实 Provider 前预检目标是否存在，并在最终写入时继续使用 exclusive-create 防止竞争覆盖；推荐输出到已被 Git 忽略的 `evals/results/`；
+- `--output` 与 `--save-baseline`、`--plan-only` 互斥，保持“实验工件”“正式 baseline”“纯规划输出”三种语义分离；
+- 保留原有两 baseline 对比接口，同时增加 General、显式单专业 Agent、Planned Multi-Agent 三工件离线比较；
+- 比较前强制校验 Provider、Model、Dataset Version/SHA、Matcher、Git Commit、dirty 标志和 Case IDs 一致，并校验三个工件的执行模式与角色；
+- 输出三组 pairwise 质量、错误、Token 和延迟指标，以及多 Agent 相对 General 的命中增量、误报增量、每额外 1000 Token 的命中增量、Agent 调用数和聚合后独有贡献数；逐案例给出 `improved/regressed/mixed/unchanged` 和具体变化原因。
+
+#### 自动化验证证据
+
+自动化测试覆盖工件读写往返、非法 JSON、拒绝覆盖、真实 Provider 创建前的文件冲突失败、CLI 保存、模式互斥、三架构对比、Mock/错误角色拒绝、Git Commit/Case ID 不一致拒绝，以及纯离线 CLI 输出。旧 baseline comparator 的跨提交 Prompt 对比测试保持通过，证明原有能力没有被新实验门禁收窄。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub，也没有产生新的模型质量、Token 或延迟结论。当前只完成实验采集和比较工具；真实三架构结论必须等新未见案例冻结、代码提交后，再以同一提交和同一 Dataset SHA 分别运行三种模式。
+
+#### 面试怎么讲
+
+> 在比较单 Agent 和多 Agent 前，我先解决实验可复现性。系统把每次运行保存为带 Dataset SHA、Git Commit、模型、Matcher、案例集合和 Usage 的不可覆盖工件，比较器只接受身份一致的三份真实 DeepSeek 结果。这样可以防止把不同数据或不同代码产生的指标误当成架构收益，同时把 Recall 增益和额外 Token、延迟放在同一个报告里。
+
+#### 准确边界与尚未完成
+
+相同 `git_dirty=true` 只能说明三次运行都有未提交改动，不能证明未提交内容完全相同，因此正式对照应使用干净提交。评测工件可能包含模型生成的短代码引用，应按普通 Review 输出管理，不能当作无敏感信息的纯指标文件。本批没有实现 Planner 自动选择“单专业 Agent”的批量路由，新 Holdout 可以先按冻结的案例域逐案例选择明确角色；也没有允许多 Agent 工件成为正式 baseline。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2483,14 +2514,15 @@ Identity v3 真实重验绑定 commit `06cedad`，Dataset SHA 保持不变。Cor
 | 聚合审计快照 | 278 | 原始 Agent Findings、kept/merged 决策、规范指纹、Category/Severity 冲突值与历史 baseline 兼容 |
 | 多缺陷聚合挑战集 | 286 | 四类混合案例、角色脚本冲突、独有贡献、负例和复杂输入顺序稳定性 |
 | Finding Identity v3 | 289 | 真实路径穿越复述回归、Explanation 根因 fallback 和相同代码不同根因保护 |
+| 架构实验工件与离线对照 | 301 | 不可覆盖工件、Provider 前置失败、三架构身份门禁、逐案例解释和旧 baseline 兼容 |
 
 当前最近一次结果：
 
 ```text
-Targeted identity/aggregation tests: 31 passed
-All tests: 289 passed, 2 third-party deprecation warnings
+Targeted artifact/comparison/runner tests: 40 passed
+All tests: 301 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (98 source files)
+mypy app evals: passed (100 source files)
 git diff --check: passed
 ```
 
@@ -2528,8 +2560,8 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 使用新的未见案例比较 General、单专业 Agent 与 Planned Multi-Agent；
-2. 设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
+1. 建立并冻结新的未见案例，提交后用实验工件比较 General、单专业 Agent 与 Planned Multi-Agent；
+2. 根据对照结果判断多 Agent 是否达到质量/成本门槛，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
 3. 满足质量、成本和恢复门槛后，再考虑接入生产 Worker。
 
 ### 9.2 后续能力

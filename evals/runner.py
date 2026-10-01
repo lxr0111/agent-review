@@ -20,6 +20,12 @@ from app.services.review_aggregator import (
 from app.services.review_finding_identity import FINDING_IDENTITY_VERSION
 from app.services.review_planner import DeterministicReviewPlanner
 from app.services.specialist_prompt_builder import agent_prompt_version
+from evals.artifacts import (
+    EvaluationArtifactError,
+    build_evaluation_artifact,
+    ensure_evaluation_artifact_path_available,
+    save_evaluation_artifact,
+)
 from evals.baseline import (
     BaselineSafetyError,
     GitState,
@@ -68,6 +74,7 @@ def validate_run_mode(
     agent_role: AgentRole = AgentRole.GENERAL,
     plan_only: bool = False,
     multi_agent: bool = False,
+    output: Path | None = None,
 ) -> None:
     if provider == "mock" and live:
         raise UnsafeEvaluationModeError("--live cannot be used with the mock provider")
@@ -112,6 +119,14 @@ def validate_run_mode(
     if multi_agent and save_baseline:
         raise UnsafeEvaluationModeError(
             "--multi-agent baseline saving is not supported until its schema is stabilized"
+        )
+    if output is not None and save_baseline:
+        raise UnsafeEvaluationModeError(
+            "--output and --save-baseline are mutually exclusive"
+        )
+    if output is not None and plan_only:
+        raise UnsafeEvaluationModeError(
+            "--output saves evaluation artifacts and cannot be used with --plan-only"
         )
 
 
@@ -356,6 +371,16 @@ def _positive_integer(value: str) -> int:
     return parsed
 
 
+def _save_artifact_if_requested(
+    evaluation: EvaluationRun,
+    output: Path | None,
+) -> None:
+    if output is None:
+        return
+    save_evaluation_artifact(build_evaluation_artifact(evaluation), output)
+    print(f"artifact_saved={output}", file=sys.stderr)
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the offline AgentReview evaluator self-test."
@@ -375,6 +400,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     selection.add_argument("--case-id")
     parser.add_argument("--save-baseline", action="store_true")
     parser.add_argument("--baseline-output", type=Path)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="save this evaluation as a non-baseline experiment artifact",
+    )
     parser.add_argument("--allow-dirty", action="store_true")
     return parser
 
@@ -395,6 +425,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             agent_role=agent_role,
             plan_only=args.plan_only,
             multi_agent=args.multi_agent,
+            output=args.output,
         )
     except UnsafeEvaluationModeError as error:
         parser.error(str(error))
@@ -409,6 +440,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except EvaluationSelectionError as error:
         parser.error(str(error))
+
+    if args.output is not None:
+        try:
+            ensure_evaluation_artifact_path_available(args.output)
+        except EvaluationArtifactError as error:
+            parser.error(str(error))
 
     if args.plan_only:
         plan = run_agent_planning(
@@ -433,6 +470,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 case_id=args.case_id,
                 agent_role=agent_role,
             )
+        try:
+            _save_artifact_if_requested(result, args.output)
+        except EvaluationArtifactError as error:
+            parser.error(str(error))
         print(result.model_dump_json(indent=2))
         return 0
 
@@ -469,7 +510,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline_path = args.baseline_output or default_baseline_path(result)
             save_model_baseline(baseline, baseline_path)
             print(f"baseline_saved={baseline_path}", file=sys.stderr)
-    except (BaselineSafetyError, EvaluationSelectionError, LLMConfigurationError) as error:
+        _save_artifact_if_requested(result, args.output)
+    except (
+        BaselineSafetyError,
+        EvaluationArtifactError,
+        EvaluationSelectionError,
+        LLMConfigurationError,
+    ) as error:
         parser.error(str(error))
 
     print(result.model_dump_json(indent=2))

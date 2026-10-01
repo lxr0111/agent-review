@@ -1,7 +1,7 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：Finding Identity v3 已完成自动化修复与真实链路重验，尚未实现生产链路
-> 更新时间：2026-09-28
+> 状态：已具备可保存、可校验的三架构 Eval 对照框架，尚未执行新 Holdout 对照或实现生产链路
+> 更新时间：2026-09-30
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
 ## 1. 文档目的
@@ -580,13 +580,13 @@ ReviewContext
 
 生产链路仍通过一个 General Agent 和 `PassthroughReviewAggregator` 调用一次模型；上面的多 Agent 流程只存在于 Eval，不改变数据库和 GitHub 发布行为。
 
-自动化验收结果为 289 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 98 个源码文件通过。测试覆盖 Identity v2/v3 的真实同义输出、相同代码上的不同根因、原始 Agent Findings、kept/merged 决策、Category/Severity 冲突明细、聚合挑战集和历史 baseline 兼容。
+自动化验收结果为 301 项全量测试通过，Ruff 通过，mypy 对 `app` 与 `evals` 的 100 个源码文件通过。测试覆盖 Identity v2/v3 的真实同义输出、相同代码上的不同根因、原始 Agent Findings、kept/merged 决策、Category/Severity 冲突明细、聚合挑战集、实验工件、Provider 前置失败、三架构比较门禁、逐案例解释和历史 baseline 兼容。
 
 真实集成方面，四个专业角色已经完成 6 次显式 DeepSeek partial trial：四个正例全部命中、两个负例保持 0 Finding，6/6 Case Pass，Usage 元数据完整。试跑没有发布 GitHub Review，也没有改变生产 Worker；它证明真实 Provider 下的职责隔离链路可用，但不是完整 baseline 或生产多 Agent 证据。
 
 真实 DeepSeek 多 Agent SQL 注入试跑形成了三个阶段的 partial trial：Identity v1 在 commit `e6f43d0` 上未合并同根因输出；Identity v2 在 commit `dd95c4b` 上完成 `2 -> 1` 合并并恢复 Case Pass；聚合审计版本在 commit `5d2e66d` 上进一步记录两份原始 Findings、Security `kept`、Correctness `merged` 和共同规范指纹。第三次结果为 False Positive=0、Case Pass=true、3637 Tokens、约 7.83 秒。三次都只执行已见 Seed 单案例，且工作区因个人文档显示 dirty，所以不是 baseline，不能外推稳定成本、延迟或总体质量。
 
-Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并拥有混合缺陷聚合挑战集。Identity v3 已完成相同路径/资源案例的真实链路重验；下一步使用新的未见案例比较架构，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
+Eval 现在已经输出 Aggregation Conflict 明细、原始 Agent Findings 和 kept/merged 决策，并拥有混合缺陷聚合挑战集。Identity v3 已完成相同路径/资源案例的真实链路重验；三架构实验工件和离线对照框架也已完成。下一步建立新的未见案例并执行 General、单专业 Agent、Planned Multi-Agent 对照，再设计 Agent Execution 持久化、`PARTIAL` 策略、并发和预算。当前仍不把多个 Agent 的输出接入生产发布链路。
 
 ## 17. 聚合审计快照
 
@@ -640,3 +640,18 @@ Identity v3 保留旧规则，并增加 Explanation fallback：
 v3 真实重验绑定 commit `06cedad` 和相同 Dataset SHA：Correctness 只输出资源泄漏，Security 只输出路径穿越，最终 `2 -> 2`、False Positive=0、Case Pass=true，总计 4044 Tokens、约 9.43 秒。两个角色各有一条独有贡献，说明本次模型输出形成了互补分工，且 Aggregator 没有误合并不同根因。
 
 由于本次模型没有再次生成重复路径 Finding，新 Explanation fallback 没有在 live 输出上触发；其合并正确性来自修复前真实输出的确定性回放。两次运行不是严格 A/B，不能把 599 Token 和约 3.64 秒的差异归因于本地 Identity 规则。两次都是 dirty-worktree、已知开发案例的 partial trial，不是 baseline。
+
+## 20. 三架构实验工件与离线比较门禁
+
+原有 baseline comparator 面向完整、单 Agent、可提交的模型基线，不适合当前被明确禁止保存 baseline 的 Planned Multi-Agent partial trial。新增实验工件层保持这两个概念分离：`--output` 只保存版本化 Evaluation Artifact，不会改变 `is_model_baseline`；文件存在时拒绝覆盖，默认推荐目录 `evals/results/` 不进入 Git。
+
+新的架构比较模式读取三份本地工件：General 单 Agent、一个显式专业 Agent 和 Planned Multi-Agent。比较过程不加载应用 Settings，不访问网络、数据库、GitHub 或 LLM。执行前必须满足：
+
+- 都是真实 DeepSeek live evaluation，而不是 Mock；
+- Provider、Model、Dataset Version/SHA、Matcher、Git Commit 和 dirty 状态一致；
+- 执行案例 ID 完全一致且没有重复；
+- 三份工件分别具有 General、非 General 单角色、Planned Multi-Agent 的正确执行语义。
+
+报告保留既有 Recall、Precision、F1、False Positive、Case Pass、Category/Severity、Schema、错误数、Latency 和 Token 对比，同时增加多 Agent 相对 General 的命中、误报、Token、平均延迟增量，以及每额外 1000 Token 的命中增量、调用数和角色独有贡献。每个案例还给出 `improved/regressed/mixed/unchanged` 状态及命中、误报、漏报和标签变化原因，避免只看总分掩盖局部退化。
+
+这仍只是实验基础设施，不是多 Agent 质量结论。相同 dirty 标志不能证明未提交内容相同，正式对照应绑定干净 commit；工件中的模型输出可能引用代码，应按 Review 数据管理。下一步是创建并冻结新的未见案例，在不根据结果继续调 Prompt、Matcher 或 Planner 的前提下执行三种架构，然后再决定是否值得进入 Agent Execution 持久化阶段。
