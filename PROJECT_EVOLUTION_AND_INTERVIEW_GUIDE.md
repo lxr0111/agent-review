@@ -2557,6 +2557,64 @@ Aggregator 没有把这条 Security 描述与 Correctness 的有效期方向错�
 - 本次结果不修改冻结 Dataset、Prompt、Matcher 或标签；若后续人工审计认为 Ground Truth 有问题，应保留 v1 并创建新版本；
 - Performance 和 Maintainability 架构分片尚未建设，证据约束/仲裁、并发、预算和 Agent Execution 持久化也尚未完成。
 
+### 6.15 Security Prompt v2 与 Finding Identity v4
+
+#### 要解决的问题
+
+Security 三架构真实对照中，Correctness Agent 报告 `seconds_until_expiry` 的减法方向错误；Security Agent 针对同一表达式进一步推测“某个下游消费者可能把正数当作凭证仍然有效”。Fixture 只给出了 UI 展示契约，没有证明该 helper 参与鉴权。Identity v3 又因为两条 Finding 的标题和影响描述差异较大而没有合并，最终同一根因被发布两次，并产生一条自动评分 False Positive。
+
+直接给所有 Finding 增加必填 Evidence 字段会同时影响 Provider JSON Schema、领域对象、数据库持久化、历史 Eval 工件和大量 Fixture。本批先在 eval-only 专业 Agent 与聚合边界做最小兼容改造，不修改数据库，也不改变生产单 General Agent 链路。
+
+#### 设计选择与行为变化
+
+- Security Prompt 从 `review-security-v1` 升级到 `review-security-v2`；
+- 明确规定函数名、可能的 Caller 或假设的下游消费者都不能证明安全影响，必须由已提供 Patch 或显式 PR 契约证明该值参与安全决策；
+- 如果数据只证明 UI 或功能契约错误，Security Agent 应当忽略，而不是把假设性后果重分类为安全 Finding；
+- Finding Identity 从 `finding-text-v3` 升级到 `finding-text-v4`，完整保留原有精确、文本 containment、标题加代码证据和 Explanation 根因路径；
+- 新增保守的“问题代码 + 修复代码”路径：两条 Finding 必须在同一文件，Explanation 中引用兼容的缺陷代码片段，Suggestion 中也引用兼容的修复代码片段；
+- 代码片段比较保留运算符和操作数顺序，允许短表达式被更完整的表达式包含，例如 ``now - expires_at`` 与 ``int((now - expires_at).total_seconds())``；
+- Category、Severity 和 Confidence 仍不参与 Finding Identity，避免标签反向污染去重；
+- Aggregator 版本升级为 `multi-agent-v2`。当分组只能依靠“问题代码 + 修复代码”成立且 Category 冲突时，不再让专业角色匹配绝对优先，而是先按 Confidence、再按 Role Alignment 和确定性 Tie-break 选择 Canonical Finding；
+- 这种特殊仲裁会在 `AggregationDecision.reason` 中明确记录，Category/Severity Conflict 仍保留所有观测值和最终选择；
+- 普通强身份匹配继续使用原有“Role Alignment 优先”策略，因此 SQL 注入等明确安全问题的行为没有改变。
+
+#### 自动化验证证据
+
+新增四类回归：
+
+1. 使用本次真实有效期 Finding 的核心文本，验证 Identity v4 将不同影响描述识别为 `problem_and_remediation_code`；
+2. Aggregator 回放 Correctness `0.95` 与推测性 Security `0.80` 冲突，验证最终只保留 Correctness Finding，并记录 Confidence 优先的证据仲裁原因；
+3. Security Prompt 测试冻结 `review-security-v2` 的调用链证据要求；
+4. 在未修改的 `architecture-security-holdout-v1` 上回放本次两个 Agent 的四条真实输出形状，验证聚合从 `4 -> 3` 修正为 `4 -> 2`、两个目标均命中、False Positive 从 1 降为 0。
+
+原有 SQL 注入重复、路径穿越/资源泄漏相邻根因、缺少索引等反例继续通过，说明新路径没有把“同一代码表达式上的不同问题”全部合并。最终验证为：
+
+```text
+Targeted evidence/aggregation tests: 26 passed
+All tests: 310 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (100 source files)
+git diff --check: passed
+```
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub，也没有生成新的 Token、Latency 或模型质量数据。回放输入来自上一批已经保存并人工审计的真实 DeepSeek 输出，但回放执行本身是确定性自动化测试，只能证明新 Identity 和 Aggregator 对该失败样本的行为。
+
+回放后该混合案例仍不是完整 Case Pass：API Key 前缀认证绕过在真实输出中被 Security Agent 评为 `critical`，而冻结 Expected Severity 是 `high`，所以 Severity Match 仍为 `1/2`。本批修复的是重复误报和推测性标签主导问题，没有篡改历史标签，也没有声称解决所有严重程度分歧。
+
+#### 面试怎么讲
+
+> 多 Agent 的一次真实对照暴露了一个典型问题：两个 Agent 引用了同一错误表达式，也给出了同一个反向减法修复，但一个按 UI 契约描述为 Correctness，另一个根据假设的下游消费者扩展成 Security，旧聚合器因此发布两条。我没有直接降低文本相似度阈值，也没有立即改数据库 Schema，而是版本化 Security Prompt，要求安全影响必须由已提供调用链证明；同时把 Identity 扩展为“问题代码和修复代码双证据”。只有这种较弱路径发生跨类别冲突时，聚合器才不让 Specialist 标签绝对优先，并把选择原因写入审计记录。真实输出回放把 `4 -> 3` 修复成 `4 -> 2`，误报降为 0，但我仍保留 `critical/high` 的 Severity 分歧，没有把局部修复包装成整个案例满分。
+
+#### 准确边界与尚未完成
+
+- Identity v4 依赖模型在 Explanation 和 Suggestion 中使用反引号引用代码；没有结构化 Evidence 的输出仍可能漏合并；
+- Confidence 是模型自报值，不是客观真实性概率；本批只在严格的双代码证据和跨类别冲突条件下将它置于 Role Alignment 之前；
+- 新规则能合并同一根因复述，但不能通用判断任意自然语言安全影响是否属于幻觉；
+- Prompt v2 是否能在真实调用中减少推测性输出尚未验证；旧 Security Holdout v1 已参与本次开发，只能作为回归集，不能再作为未见盲测；
+- 下一步应先建立新的 Security Architecture Holdout v2，冻结后再运行 General、Security v2 和 Multi-Agent v2，验证质量收益是否能在未见案例上复现。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2617,14 +2675,15 @@ Aggregator 没有把这条 Security 描述与 Correctness 的有效期方向错�
 | Finding Identity v3 | 289 | 真实路径穿越复述回归、Explanation 根因 fallback 和相同代码不同根因保护 |
 | 架构实验工件与离线对照 | 301 | 不可覆盖工件、Provider 前置失败、三架构身份门禁、逐案例解释和旧 baseline 兼容 |
 | Security 架构 Holdout v1 | 306 | 四个新案例、冻结 SHA、历史数据隔离、Planner 路由、三模式 Mock 自测和 Negative 约束 |
+| Security Prompt v2 与 Finding Identity v4 | 310 | 调用链证据约束、问题/修复双代码证据、跨类别保守仲裁、真实输出回放和不同根因保护 |
 
 当前最近一次结果：
 
 ```text
-Targeted architecture Security holdout tests: 5 passed
-All tests: 306 passed, 2 third-party deprecation warnings
+Targeted evidence/aggregation tests: 26 passed
+All tests: 310 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app/evals plus new dataset test: passed (101 source files)
+mypy app evals: passed (100 source files)
 git diff --check: passed
 ```
 
@@ -2663,9 +2722,9 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 针对本次混合 API Key 案例设计证据约束与聚合仲裁，拒绝缺少已提供代码/契约依据的下游影响推测，并避免把同一根因重复发布；
-2. 保留 Security Holdout v1 首次结果不变，增加确定性回归后再建立独立的 Performance/Maintainability 冻结分片，验证结论是否跨领域成立；
-3. 只有质量/成本门槛达到后，才设计 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget，最后考虑接入生产 Worker。
+1. 保留 Security Holdout v1 首次结果不变，设计并冻结新的 Security Architecture Holdout v2，用未见案例验证 Security Prompt v2、Identity v4 和 Multi-Agent v2，而不是继续在 v1 上调参；
+2. 根据 v2 对照决定是否继续 Multi-Agent；若仍未超过 General，则正式收口实验并进入 GitHub 行级评论；若达到质量/成本门槛，再补 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
+3. Multi-Agent 决策完成后，依次实现行级 Diff 映射与幂等发布、大型 PR 分片与预算控制，最后完成可观测性、README 和演示收尾。
 
 ### 9.2 后续能力
 

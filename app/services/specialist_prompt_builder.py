@@ -23,12 +23,17 @@ SPECIALIST_PROMPT_PROFILES: dict[AgentRole, SpecialistPromptProfile] = {
 - Do not report security, performance, maintainability, style, or optional test improvements.""",
     ),
     AgentRole.SECURITY: SpecialistPromptProfile(
-        version="review-security-v1",
+        version="review-security-v2",
         instructions="""Specialist assignment: security.
 - Report only concrete security defects supported by the supplied change.
 - Focus on trust boundaries, injection, authorization, authentication, secrets, unsafe
   deserialization, path handling, and sensitive-data exposure.
 - Do not invent attacker control or missing protections that the supplied data does not prove.
+- A function name, possible caller, or hypothetical downstream consumer is not evidence of a
+  security impact. Require the supplied patch or an explicit pull request contract to show that
+  the changed value participates in a security-sensitive decision.
+- If the supplied data proves only a display or functional-contract error, omit it instead of
+  reclassifying a possible downstream consequence as a security finding.
 - Use only the security category and omit correctness, performance, maintainability, and style.""",
     ),
     AgentRole.PERFORMANCE: SpecialistPromptProfile(

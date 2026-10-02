@@ -2,11 +2,12 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
+from enum import StrEnum
 from itertools import pairwise
 
 from app.domain.review.report import ReviewFinding
 
-FINDING_IDENTITY_VERSION = "finding-text-v3"
+FINDING_IDENTITY_VERSION = "finding-text-v4"
 _MIN_TITLE_CONTAINMENT = 0.75
 _MIN_COMBINED_CONTAINMENT = 0.65
 _MIN_CODE_EVIDENCE_LENGTH = 12
@@ -90,6 +91,13 @@ class FindingIdentity:
     fingerprint: str
 
 
+class FindingMatchKind(StrEnum):
+    EXACT = "exact"
+    TEXT_CONTAINMENT = "text_containment"
+    ROOT_CAUSE_AND_CODE = "root_cause_and_code"
+    PROBLEM_AND_REMEDIATION_CODE = "problem_and_remediation_code"
+
+
 def finding_identity(finding: ReviewFinding) -> FindingIdentity:
     normalized_title = normalize_finding_text(finding.title)
     normalized_explanation = normalize_finding_text(finding.explanation)
@@ -105,13 +113,22 @@ def finding_identity(finding: ReviewFinding) -> FindingIdentity:
 def findings_describe_same_issue(left: ReviewFinding, right: ReviewFinding) -> bool:
     """Conservatively detects duplicate findings without using labels or severity."""
 
+    return finding_match_kind(left, right) is not None
+
+
+def finding_match_kind(
+    left: ReviewFinding,
+    right: ReviewFinding,
+) -> FindingMatchKind | None:
+    """Returns why two findings describe one root cause, without using labels."""
+
     if left.file_path != right.file_path:
-        return False
+        return None
 
     left_identity = finding_identity(left)
     right_identity = finding_identity(right)
     if left_identity.fingerprint == right_identity.fingerprint:
-        return True
+        return FindingMatchKind.EXACT
 
     title_containment = _token_containment(
         left_identity.normalized_title,
@@ -125,9 +142,13 @@ def findings_describe_same_issue(left: ReviewFinding, right: ReviewFinding) -> b
         title_containment >= _MIN_TITLE_CONTAINMENT
         and combined_containment >= _MIN_COMBINED_CONTAINMENT
     ):
-        return True
+        return FindingMatchKind.TEXT_CONTAINMENT
 
-    return _shares_root_cause_and_code_evidence(left, right)
+    if _shares_root_cause_and_code_evidence(left, right):
+        return FindingMatchKind.ROOT_CAUSE_AND_CODE
+    if _shares_problem_and_remediation_code_evidence(left, right):
+        return FindingMatchKind.PROBLEM_AND_REMEDIATION_CODE
+    return None
 
 
 def normalize_finding_text(value: str) -> str:
@@ -174,6 +195,45 @@ def _shares_explanation_root_cause(left: str, right: str) -> bool:
         _explanation_signal_bigrams(left_prose)
         & _explanation_signal_bigrams(right_prose)
     )
+
+
+def _shares_problem_and_remediation_code_evidence(
+    left: ReviewFinding,
+    right: ReviewFinding,
+) -> bool:
+    """Matches differently framed impacts only when defect and repair code both agree."""
+
+    return _has_contained_code_span(left.explanation, right.explanation) and (
+        _has_contained_code_span(left.suggestion, right.suggestion)
+    )
+
+
+def _has_contained_code_span(left: str, right: str) -> bool:
+    left_spans = _normalized_code_spans(left)
+    right_spans = _normalized_code_spans(right)
+    return any(
+        smaller in larger
+        for left_span in left_spans
+        for right_span in right_spans
+        for smaller, larger in (
+            (left_span, right_span)
+            if len(left_span) <= len(right_span)
+            else (right_span, left_span),
+        )
+    )
+
+
+def _normalized_code_spans(value: str) -> set[str]:
+    return {
+        normalized
+        for raw_span in re.findall(r"`([^`\r\n]+)`", value)
+        if len(normalized := _normalize_code_span(raw_span)) >= _MIN_CODE_EVIDENCE_LENGTH
+    }
+
+
+def _normalize_code_span(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"\s+", "", normalized)
 
 
 def _signal_tokens(value: str) -> set[str]:

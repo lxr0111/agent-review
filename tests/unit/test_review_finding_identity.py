@@ -3,7 +3,9 @@ from dataclasses import replace
 from app.domain.review.report import FindingCategory, FindingSeverity, ReviewFinding
 from app.services.review_finding_identity import (
     FINDING_IDENTITY_VERSION,
+    FindingMatchKind,
     finding_identity,
+    finding_match_kind,
     findings_describe_same_issue,
     normalize_finding_text,
 )
@@ -78,7 +80,7 @@ def test_identity_v3_preserves_v2_live_sql_paraphrase_matching() -> None:
         confidence=0.98,
     )
 
-    assert FINDING_IDENTITY_VERSION == "finding-text-v3"
+    assert FINDING_IDENTITY_VERSION == "finding-text-v4"
     assert findings_describe_same_issue(correctness, security)
 
 
@@ -157,6 +159,43 @@ def test_identity_v3_keeps_path_traversal_and_resource_leak_distinct() -> None:
     )
 
     assert not findings_describe_same_issue(path_traversal, resource_leak)
+
+
+def test_identity_v4_merges_live_lifetime_findings_by_problem_and_repair_code() -> None:
+    correctness = replace(
+        _finding(),
+        title="seconds_until_expiry returns a negated remaining lifetime",
+        explanation=(
+            "`int((now - expires_at).total_seconds())` subtracts the expiry from the "
+            "current time, so a still-valid key gets a negative remaining lifetime."
+        ),
+        suggestion=(
+            "Compute the other direction with "
+            "`return int((expires_at - now).total_seconds())`."
+        ),
+        file_path="src/api_keys.py",
+        category=FindingCategory.CORRECTNESS,
+        severity=FindingSeverity.MEDIUM,
+        confidence=0.95,
+    )
+    security = replace(
+        _finding(),
+        title="Expiry helper returns a positive value for already-expired keys",
+        explanation=(
+            "`seconds_until_expiry` computes `now - expires_at`, which is positive after "
+            "expiry. A hypothetical consumer could treat that value as still active."
+        ),
+        suggestion="Compute remaining lifetime as `expires_at - now`.",
+        file_path="src/api_keys.py",
+        category=FindingCategory.SECURITY,
+        severity=FindingSeverity.MEDIUM,
+        confidence=0.80,
+    )
+
+    assert finding_match_kind(correctness, security) == (
+        FindingMatchKind.PROBLEM_AND_REMEDIATION_CODE
+    )
+    assert findings_describe_same_issue(correctness, security)
 
 
 def test_identity_requires_the_same_file() -> None:

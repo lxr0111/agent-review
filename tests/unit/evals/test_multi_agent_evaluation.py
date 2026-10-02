@@ -45,7 +45,7 @@ class _RoleAwareConflictProvider:
     model_name = "conflict-test-model"
 
     def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
-        is_security = prompt.version == "review-security-v1"
+        is_security = prompt.version == "review-security-v2"
         return LLMReviewResult(
             output=LLMReviewOutput(
                 summary="One issue found.",
@@ -122,7 +122,7 @@ def test_mock_multi_agent_runner_self_tests_planning_and_aggregation() -> None:
     assert result.run_kind == "multi_agent_evaluator_self_test"
     assert result.execution_mode == EvaluationExecutionMode.PLANNED_MULTI_AGENT
     assert result.agent_role is None
-    assert result.finding_identity_version == "finding-text-v3"
+    assert result.finding_identity_version == "finding-text-v4"
     assert result.is_model_baseline is False
     assert result.metrics.case_pass_rate == 1.0
     assert result.metrics.total_agent_calls == 2
@@ -212,7 +212,7 @@ def test_live_multi_agent_runner_sums_usage_and_reproducibility_metadata() -> No
     assert result.metrics.usage.total_tokens == 200
     assert [prompt.version for prompt in provider.prompts] == [
         "review-correctness-v1",
-        "review-security-v1",
+        "review-security-v2",
     ]
 
 

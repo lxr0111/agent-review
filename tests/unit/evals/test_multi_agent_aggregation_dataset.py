@@ -161,7 +161,7 @@ def test_overlap_case_merges_duplicate_and_preserves_distinct_root_cause() -> No
                     confidence=0.90,
                 )
             ),
-            "review-security-v1": _output(
+            "review-security-v2": _output(
                 _finding(
                     title="SQL injection through interpolated email query",
                     explanation=(
@@ -256,7 +256,7 @@ def test_adjacent_issues_with_shared_code_evidence_remain_distinct() -> None:
                     confidence=0.93,
                 )
             ),
-            "review-security-v1": _output(
+            "review-security-v2": _output(
                 _finding(
                     title="Unvalidated upload filename permits path traversal",
                     explanation=(
@@ -329,7 +329,7 @@ def test_live_path_paraphrases_merge_without_hiding_resource_finding() -> None:
                     confidence=0.85,
                 ),
             ),
-            "review-security-v1": _output(
+            "review-security-v2": _output(
                 _finding(
                     title="Path traversal / arbitrary file read in read_upload",
                     explanation=(

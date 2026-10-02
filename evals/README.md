@@ -130,13 +130,16 @@ output should be handled with the same care as ordinary review output. Mock usag
 this command is a plumbing self-test, not model-quality evidence. `--multi-agent` cannot be
 combined with `--agent-role`, `--plan-only`, or `--save-baseline`.
 
-Multi-agent runs also record `finding_identity_version`. `finding-text-v3` preserves the original
-high-threshold lexical match and the v2 title-plus-code path. It adds a conservative fallback for
-live paraphrases whose titles use different vocabulary: the findings must reference the same file,
-share an identical inline code span, and still share at least four non-generic explanation signals
-plus a prose bigram after inline code is removed. Category, severity and confidence never influence
-identity matching. Historical single-agent baselines do not have this field and load it as `null`;
-historical multi-agent output keeps its recorded v1/v2 identity version.
+Multi-agent runs also record `finding_identity_version`. `finding-text-v4` preserves the original
+high-threshold lexical match, the v2 title-plus-code path, and the v3 explanation-root-cause
+fallback. It adds a narrower fallback for findings that frame the impact differently: both
+findings must reference the same file, cite compatible inline code for the defective expression,
+and cite compatible inline code for the remediation. Source order and operators are preserved by
+this code-span comparison. Category, severity and confidence never determine identity. When this
+new evidence path groups conflicting categories, aggregation ranks confidence before role
+alignment and records that choice in the decision audit instead of treating a specialist label as
+proof of impact. Historical single-agent baselines do not have this field and load it as `null`;
+historical multi-agent output keeps its recorded identity version.
 
 A real multi-agent partial trial requires all explicit safety flags:
 

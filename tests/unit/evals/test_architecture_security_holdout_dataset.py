@@ -2,9 +2,15 @@ from collections import Counter
 from pathlib import Path
 
 from app.domain.review.report import FindingCategory, FindingSeverity
+from app.providers.llm.protocol import LLMReviewResult, ReviewPrompt
+from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
+from app.services.planned_review_orchestrator import PlannedReviewOrchestrator
 from app.services.review_agent import AgentRole
+from app.services.review_agent_registry import create_default_agent_registry
+from app.services.review_aggregator import DeterministicReviewAggregator
 from app.services.review_planner import DeterministicReviewPlanner
 from evals.baseline import dataset_sha256
+from evals.multi_agent import evaluate_multi_agent_case
 from evals.runner import run_mock_evaluation, run_mock_multi_agent_evaluation
 from evals.schemas import load_dataset
 
@@ -18,6 +24,36 @@ EXISTING_DATASET_PATHS = (
 EXPECTED_DATASET_SHA256 = (
     "ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e"
 )
+
+
+class _LiveOutputReplayProvider:
+    model_name = "deepseek-live-output-replay"
+
+    def __init__(self, outputs: dict[str, LLMReviewOutput]) -> None:
+        self._outputs = outputs
+
+    def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
+        return LLMReviewResult(output=self._outputs[prompt.version], usage=None)
+
+
+def _finding(
+    *,
+    title: str,
+    explanation: str,
+    suggestion: str,
+    severity: FindingSeverity,
+    category: FindingCategory,
+    confidence: float,
+) -> LLMReviewFinding:
+    return LLMReviewFinding(
+        title=title,
+        explanation=explanation,
+        suggestion=suggestion,
+        file_path="src/api_keys.py",
+        severity=severity,
+        category=category,
+        confidence=confidence,
+    )
 
 
 def test_architecture_security_holdout_is_frozen_and_has_expected_shape() -> None:
@@ -132,3 +168,92 @@ def test_architecture_security_holdout_mock_paths_are_self_tests_only() -> None:
     assert multi_agent.metrics.pre_aggregation_findings == 8
     assert multi_agent.metrics.post_aggregation_findings == 4
     assert multi_agent.metrics.merged_findings == 4
+
+
+def test_live_api_key_outputs_replay_without_the_duplicate_security_impact() -> None:
+    dataset = load_dataset(DATASET_PATH)
+    case = next(
+        case
+        for case in dataset.cases
+        if case.id == "architecture-security-api-key-prefix-and-lifetime"
+    )
+    correctness = LLMReviewOutput(
+        summary="Correctness replay.",
+        findings=(
+            _finding(
+                title="seconds_until_expiry returns a negated remaining lifetime",
+                explanation=(
+                    "`int((now - expires_at).total_seconds())` subtracts the expiry from "
+                    "the current time, so a still-valid key gets a negative value."
+                ),
+                suggestion=(
+                    "Use `return int((expires_at - now).total_seconds())` and test both "
+                    "future and past expiry values."
+                ),
+                severity=FindingSeverity.MEDIUM,
+                category=FindingCategory.CORRECTNESS,
+                confidence=0.95,
+            ),
+            _finding(
+                title="api_key_matches accepts any prefix of the expected key",
+                explanation=(
+                    "`expected_key.startswith(provided_key)` accepts a truncated prefix "
+                    "or the empty string instead of requiring the full credential."
+                ),
+                suggestion="Use `hmac.compare_digest(provided_key, expected_key)`.",
+                severity=FindingSeverity.HIGH,
+                category=FindingCategory.CORRECTNESS,
+                confidence=0.90,
+            ),
+        ),
+    )
+    security = LLMReviewOutput(
+        summary="Security replay.",
+        findings=(
+            _finding(
+                title="API key check accepts any prefix of the expected key",
+                explanation=(
+                    "`expected_key.startswith(provided_key)` accepts an attacker-supplied "
+                    "prefix, including the empty string, as a complete credential."
+                ),
+                suggestion="Use `hmac.compare_digest(provided_key, expected_key)`.",
+                severity=FindingSeverity.CRITICAL,
+                category=FindingCategory.SECURITY,
+                confidence=0.92,
+            ),
+            _finding(
+                title="Expiry helper returns a positive value for already-expired keys",
+                explanation=(
+                    "`seconds_until_expiry` computes `now - expires_at`; a hypothetical "
+                    "consumer could treat the positive result as an active credential."
+                ),
+                suggestion="Compute the remaining lifetime as `expires_at - now`.",
+                severity=FindingSeverity.MEDIUM,
+                category=FindingCategory.SECURITY,
+                confidence=0.80,
+            ),
+        ),
+    )
+    provider = _LiveOutputReplayProvider(
+        {
+            "review-correctness-v1": correctness,
+            "review-security-v2": security,
+        }
+    )
+    orchestrator = PlannedReviewOrchestrator(
+        planner=DeterministicReviewPlanner(),
+        registry=create_default_agent_registry(provider),
+        aggregator=DeterministicReviewAggregator(),
+    )
+
+    result = evaluate_multi_agent_case(case, orchestrator)
+
+    assert result.pre_aggregation_finding_count == 4
+    assert result.post_aggregation_finding_count == 2
+    assert result.merged_finding_count == 2
+    assert result.matched_finding_count == 2
+    assert result.false_positive_count == 0
+    assert result.false_negative_count == 0
+    assert result.category_match_count == 2
+    assert result.severity_match_count == 1
+    assert result.case_pass is False

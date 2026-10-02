@@ -64,7 +64,7 @@ def _result(*findings: ReviewFinding) -> AgentReviewResult:
             risk_level=derive_review_risk(findings),
             findings=findings,
             model_name="test-model",
-            prompt_version="review-security-v1",
+            prompt_version="review-security-v2",
             reviewed_file_count=1,
             skipped_file_count=0,
         ),

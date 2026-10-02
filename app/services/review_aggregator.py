@@ -13,7 +13,9 @@ from app.domain.review.report import (
 from app.services.review_agent import AgentReviewResult, AgentRole
 from app.services.review_finding_identity import (
     FINDING_IDENTITY_VERSION,
+    FindingMatchKind,
     finding_identity,
+    finding_match_kind,
     findings_describe_same_issue,
     normalize_finding_text,
 )
@@ -22,7 +24,7 @@ from app.services.review_finding_validator import (
     ValidatedAgentFinding,
 )
 
-AGGREGATOR_PROMPT_VERSION = "multi-agent-v1"
+AGGREGATOR_PROMPT_VERSION = "multi-agent-v2"
 
 
 @runtime_checkable
@@ -146,9 +148,22 @@ class DeterministicReviewAggregator:
         conflicts: list[AggregationConflict] = []
 
         for group in groups:
-            canonical = min(group, key=self._canonical_rank)
+            evidence_constrained = self._requires_evidence_constrained_ranking(group)
+            canonical = min(
+                group,
+                key=lambda candidate: self._canonical_rank(
+                    candidate,
+                    evidence_constrained=evidence_constrained,
+                ),
+            )
             canonical_identity = finding_identity(canonical.finding)
             selected.append(canonical.finding)
+            selection_reason = (
+                "selected by confidence before role alignment because duplicate identity "
+                "relied on shared problem and remediation code across conflicting categories"
+                if evidence_constrained
+                else "selected by role alignment, confidence, and deterministic tie-breaks"
+            )
             decisions.append(
                 AggregationDecision(
                     action=AggregationAction.KEPT,
@@ -156,7 +171,7 @@ class DeterministicReviewAggregator:
                     file_path=canonical.finding.file_path,
                     title=canonical.finding.title,
                     canonical_fingerprint=canonical_identity.fingerprint,
-                    reason="selected by role alignment, confidence, and deterministic tie-breaks",
+                    reason=selection_reason,
                 )
             )
             for candidate in group:
@@ -169,7 +184,12 @@ class DeterministicReviewAggregator:
                         file_path=candidate.finding.file_path,
                         title=candidate.finding.title,
                         canonical_fingerprint=canonical_identity.fingerprint,
-                        reason="merged as the same issue using file and text identity",
+                        reason=(
+                            "merged as the same issue using shared problem and remediation "
+                            "code evidence"
+                            if evidence_constrained
+                            else "merged as the same issue using file and text identity"
+                        ),
                     )
                 )
             conflicts.extend(self._conflicts(group, canonical))
@@ -219,17 +239,37 @@ class DeterministicReviewAggregator:
     def _canonical_rank(
         self,
         candidate: ValidatedAgentFinding,
-    ) -> tuple[int, float, int, int, str, str]:
+        *,
+        evidence_constrained: bool,
+    ) -> tuple[float, float, int, int, str, str]:
         finding = candidate.finding
         role_aligned = finding.category in self._ROLE_CATEGORIES[candidate.role]
         content_length = len(finding.explanation.strip()) + len(finding.suggestion.strip())
+        primary_rank: float = -float(role_aligned)
+        confidence_rank: float = -finding.confidence
+        if evidence_constrained:
+            primary_rank, confidence_rank = confidence_rank, primary_rank
         return (
-            -int(role_aligned),
-            -finding.confidence,
+            primary_rank,
+            confidence_rank,
             -content_length,
             self._ROLE_ORDER[candidate.role],
             normalize_finding_text(finding.title),
             normalize_finding_text(finding.explanation),
+        )
+
+    @staticmethod
+    def _requires_evidence_constrained_ranking(
+        group: tuple[ValidatedAgentFinding, ...],
+    ) -> bool:
+        categories = {candidate.finding.category for candidate in group}
+        if len(categories) < 2:
+            return False
+        return any(
+            finding_match_kind(left.finding, right.finding)
+            == FindingMatchKind.PROBLEM_AND_REMEDIATION_CODE
+            for position, left in enumerate(group)
+            for right in group[position + 1 :]
         )
 
     def _candidate_order(
@@ -298,8 +338,8 @@ class DeterministicReviewAggregator:
                         selected_value=selected_value,
                         observed_values=observed_values,
                         reason=(
-                            "kept the label from the canonical finding selected by role "
-                            "alignment, confidence, and deterministic tie-breaks"
+                            "kept the label from the canonical finding selected by the "
+                            "group's deterministic evidence-aware ranking"
                         ),
                     )
                 )

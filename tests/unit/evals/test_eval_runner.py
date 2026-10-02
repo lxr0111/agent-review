@@ -85,10 +85,10 @@ def test_mock_runner_can_self_test_one_explicit_specialist() -> None:
     )
 
     assert result.agent_role == AgentRole.SECURITY
-    assert result.prompt_version == "review-security-v1"
+    assert result.prompt_version == "review-security-v2"
     assert result.executed_case_count == 1
     assert result.cases[0].agent_role == AgentRole.SECURITY
-    assert result.cases[0].prompt_version == "review-security-v1"
+    assert result.cases[0].prompt_version == "review-security-v2"
     assert result.metrics.case_pass_rate == 1.0
 
 
@@ -339,11 +339,11 @@ def test_live_runner_records_specialist_prompt_role_and_usage() -> None:
     )
 
     assert result.agent_role == AgentRole.SECURITY
-    assert result.prompt_version == "review-security-v1"
+    assert result.prompt_version == "review-security-v2"
     assert result.cases[0].agent_role == AgentRole.SECURITY
-    assert result.cases[0].prompt_version == "review-security-v1"
+    assert result.cases[0].prompt_version == "review-security-v2"
     assert result.metrics.usage.total_tokens == 100
-    assert provider.prompts[0].version == "review-security-v1"
+    assert provider.prompts[0].version == "review-security-v2"
     assert "Specialist assignment: security" in provider.prompts[0].system
 
 

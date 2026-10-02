@@ -67,11 +67,12 @@ def _finding(
     severity: FindingSeverity = FindingSeverity.HIGH,
     category: FindingCategory = FindingCategory.SECURITY,
     confidence: float = 0.9,
+    suggestion: str = "Use a parameterized query.",
 ) -> ReviewFinding:
     return ReviewFinding(
         title=title,
         explanation=explanation,
-        suggestion="Use a parameterized query.",
+        suggestion=suggestion,
         file_path=file_path,
         severity=severity,
         category=category,
@@ -117,7 +118,8 @@ def test_aggregator_merges_duplicate_and_prefers_role_aligned_label() -> None:
 
     assert isinstance(aggregator, ReviewAggregator)
     assert result.report.findings == (specialist,)
-    assert result.finding_identity_version == "finding-text-v3"
+    assert result.finding_identity_version == "finding-text-v4"
+    assert result.report.prompt_version == "multi-agent-v2"
     assert result.report.risk_level == ReviewRiskLevel.HIGH
     assert result.report.prompt_version == AGGREGATOR_PROMPT_VERSION
     assert [decision.action for decision in result.decisions] == [
@@ -262,6 +264,77 @@ def test_aggregator_merges_live_paraphrases_that_share_root_cause_and_code() -> 
         AggregationAction.KEPT,
         AggregationAction.MERGED,
     ]
+
+
+def test_aggregator_replays_live_lifetime_conflict_without_duplicate_security_impact() -> None:
+    context = replace(
+        _context(),
+        reviewable_files=(
+            ChangedFile(
+                path="src/api_keys.py",
+                status=FileChangeStatus.MODIFIED,
+                additions=5,
+                deletions=0,
+                changes=5,
+                patch=(
+                    "@@ -0,0 +1,5 @@\n"
+                    "+def api_key_matches(provided_key, expected_key):\n"
+                    "+    return expected_key.startswith(provided_key)\n"
+                    "+\n"
+                    "+def seconds_until_expiry(expires_at, now):\n"
+                    "+    return int((now - expires_at).total_seconds())"
+                ),
+            ),
+        ),
+    )
+    correctness = _finding(
+        title="seconds_until_expiry returns a negated remaining lifetime",
+        explanation=(
+            "`int((now - expires_at).total_seconds())` subtracts the expiry from the "
+            "current time, so a still-valid key gets a negative remaining lifetime."
+        ),
+        suggestion=(
+            "Compute the other direction with "
+            "`return int((expires_at - now).total_seconds())`."
+        ),
+        file_path="src/api_keys.py",
+        category=FindingCategory.CORRECTNESS,
+        severity=FindingSeverity.MEDIUM,
+        confidence=0.95,
+    )
+    security = _finding(
+        title="Expiry helper returns a positive value for already-expired keys",
+        explanation=(
+            "`seconds_until_expiry` computes `now - expires_at`, which is positive after "
+            "expiry. A hypothetical consumer could treat that value as still active."
+        ),
+        suggestion="Compute remaining lifetime as `expires_at - now`.",
+        file_path="src/api_keys.py",
+        category=FindingCategory.SECURITY,
+        severity=FindingSeverity.MEDIUM,
+        confidence=0.80,
+    )
+
+    result = DeterministicReviewAggregator().aggregate_with_metadata(
+        context=context,
+        results=(
+            _result(AgentRole.CORRECTNESS, correctness),
+            _result(AgentRole.SECURITY, security),
+        ),
+    )
+
+    assert result.report.findings == (correctness,)
+    assert result.finding_identity_version == "finding-text-v4"
+    assert result.report.prompt_version == "multi-agent-v2"
+    assert [decision.action for decision in result.decisions] == [
+        AggregationAction.KEPT,
+        AggregationAction.MERGED,
+    ]
+    assert result.decisions[0].source_role == AgentRole.CORRECTNESS
+    assert "confidence before role alignment" in result.decisions[0].reason
+    assert {conflict.field: conflict.selected_value for conflict in result.conflicts} == {
+        "category": FindingCategory.CORRECTNESS.value,
+    }
 
 
 def test_aggregator_handles_multiple_empty_agent_reports() -> None:
