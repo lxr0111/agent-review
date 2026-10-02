@@ -1,0 +1,222 @@
+{
+  "schema_version": "review-eval-v1",
+  "dataset_version": "architecture-security-holdout-v2",
+  "cases": [
+    {
+      "id": "architecture-security-v2-unverified-jwt-and-short-page",
+      "description": "A token decoder disables JWT signature verification while an independent audit-event paginator returns one fewer item than its documented limit.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval-v2",
+        "number": 401,
+        "title": "Decode access tokens and page audit events",
+        "body": "The access_token is supplied by an untrusted client and must have its HS256 signature verified with signing_key before sub is trusted. page_events must return exactly limit items whenever that many remain after offset.",
+        "base_sha": "base-architecture-v2-jwt-short-page",
+        "head_sha": "head-architecture-v2-jwt-short-page",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/session_tokens.py",
+          "status": "added",
+          "additions": 5,
+          "deletions": 0,
+          "changes": 5,
+          "patch": "@@ -0,0 +1,5 @@\n+import jwt\n+\n+def subject_from_access_token(access_token, signing_key):\n+    claims = jwt.decode(access_token, options={'verify_signature': False})\n+    return claims['sub']",
+          "previous_path": null
+        },
+        {
+          "path": "src/audit_pages.py",
+          "status": "added",
+          "additions": 2,
+          "deletions": 0,
+          "changes": 2,
+          "patch": "@@ -0,0 +1,2 @@\n+def page_events(events, offset, limit):\n+    return events[offset:offset + limit - 1]",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "jwt-signature-verification-disabled",
+          "description": "Decoding the untrusted access token with signature verification disabled lets a caller forge the subject claim.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/session_tokens.py",
+          "range": {
+            "start_line": 3,
+            "end_line": 5
+          },
+          "match_terms": [
+            [
+              "signature verification disabled",
+              "disabled signature verification",
+              "without verifying the signature",
+              "unverified jwt"
+            ],
+            [
+              "verify signature false",
+              "verify_signature false",
+              "forged access token",
+              "forged subject"
+            ]
+          ]
+        },
+        {
+          "id": "pagination-limit-returns-one-fewer-item",
+          "description": "Subtracting one from the exclusive slice end returns at most limit minus one audit events instead of the documented limit.",
+          "category": "correctness",
+          "severity": "medium",
+          "file_path": "src/audit_pages.py",
+          "range": {
+            "start_line": 2,
+            "end_line": 2
+          },
+          "match_terms": [
+            [
+              "one fewer item",
+              "one less item",
+              "limit minus one",
+              "short page"
+            ],
+            [
+              "slice end",
+              "offset plus limit minus one",
+              "limit - 1",
+              "exactly limit"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-v2-predictable-reset-code",
+      "description": "A password-reset code is generated with the deterministic general-purpose random module instead of a cryptographically secure source.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval-v2",
+        "number": 402,
+        "title": "Generate password reset codes",
+        "body": "A caller who knows a code can reset the corresponding account password. Attackers may request reset codes for accounts they do not own, so generated codes must be cryptographically unpredictable; rate limiting is enforced separately.",
+        "base_sha": "base-architecture-v2-reset-code",
+        "head_sha": "head-architecture-v2-reset-code",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/password_reset_codes.py",
+          "status": "added",
+          "additions": 5,
+          "deletions": 0,
+          "changes": 5,
+          "patch": "@@ -0,0 +1,5 @@\n+from random import Random\n+\n+_rng = Random()\n+def create_password_reset_code():\n+    return f'{_rng.randrange(1_000_000):06d}'",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "password-reset-code-uses-non-cryptographic-randomness",
+          "description": "The general-purpose random generator is predictable and is not suitable for password-reset credentials that grant account access.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/password_reset_codes.py",
+          "range": {
+            "start_line": 1,
+            "end_line": 5
+          },
+          "match_terms": [
+            [
+              "predictable reset code",
+              "predictable token",
+              "non cryptographic random",
+              "cryptographically insecure"
+            ],
+            [
+              "random",
+              "secrets",
+              "password reset",
+              "account reset"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-v2-access-token-in-url",
+      "description": "A bearer access token is placed in a callback URL query parameter where normal URL handling can disclose it.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval-v2",
+        "number": 403,
+        "title": "Build the browser callback URL",
+        "body": "The access token parameter, access_token, is a bearer credential that grants account API access. The returned URL is opened by the user's browser and may be recorded in browser history, reverse-proxy logs, analytics, and Referer headers.",
+        "base_sha": "base-architecture-v2-token-url",
+        "head_sha": "head-architecture-v2-token-url",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/browser_callbacks.py",
+          "status": "added",
+          "additions": 2,
+          "deletions": 0,
+          "changes": 2,
+          "patch": "@@ -0,0 +1,2 @@\n+def build_callback_url(base_url, access_token):\n+    return f'{base_url}/complete?access_token={access_token}'",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": [
+        {
+          "id": "bearer-access-token-leaks-through-url",
+          "description": "Putting the bearer token in the query string exposes it through browser history, logs, analytics, or Referer propagation.",
+          "category": "security",
+          "severity": "high",
+          "file_path": "src/browser_callbacks.py",
+          "range": {
+            "start_line": 1,
+            "end_line": 2
+          },
+          "match_terms": [
+            [
+              "access token in url",
+              "token in query string",
+              "bearer token in query parameter",
+              "credential in url"
+            ],
+            [
+              "browser history",
+              "server logs",
+              "referer",
+              "url leakage"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "architecture-security-v2-negative-reset-token",
+      "description": "A password-reset helper generates a high-entropy token and stores only its digest while unchanged caller code owns expiry and one-time-use enforcement.",
+      "pull_request": {
+        "repository": "example/architecture-security-eval-v2",
+        "number": 404,
+        "title": "Create password reset tokens safely",
+        "body": "The unchanged caller sends the returned token over TLS and enforces a fifteen-minute expiry plus one-time use. store_digest persists only the supplied digest. This helper is responsible only for generating an unpredictable token and storing its digest.",
+        "base_sha": "base-architecture-v2-safe-reset-token",
+        "head_sha": "head-architecture-v2-safe-reset-token",
+        "draft": false,
+        "author_login": "eval-author"
+      },
+      "files": [
+        {
+          "path": "src/safe_password_reset_tokens.py",
+          "status": "added",
+          "additions": 8,
+          "deletions": 0,
+          "changes": 8,
+          "patch": "@@ -0,0 +1,8 @@\n+import hashlib\n+import secrets\n+\n+def new_password_reset_token(store_digest):\n+    token = secrets.token_urlsafe(32)\n+    digest = hashlib.sha256(token.encode('utf-8')).hexdigest()\n+    store_digest(digest)\n+    return token",
+          "previous_path": null
+        }
+      ],
+      "expected_findings": []
+    }
+  ]
+}

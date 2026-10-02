@@ -239,6 +239,39 @@ These are paid live runs and are intentionally not executed by automated tests. 
 must be interpreted as a frozen four-case Security shard, not a production-wide quality or
 latency benchmark.
 
+The v1 shard has now been used to develop Security Prompt v2 and Finding Identity v4. Keep its
+artifacts as historical evidence and regression input; do not describe another v1 run as an
+unseen comparison. The next clean architecture experiment uses the independently frozen v2
+shard. Commit the dataset first, verify a clean worktree, and then use distinct immutable output
+paths:
+
+```powershell
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v2.json `
+  --provider deepseek --live --agent-role general `
+  --output evals/results/security-holdout-v2-general.json
+
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v2.json `
+  --provider deepseek --live --agent-role security `
+  --output evals/results/security-holdout-v2-specialist.json
+
+python -m evals.runner `
+  --dataset evals/cases/review_architecture_security_holdout_v2.json `
+  --provider deepseek --live --multi-agent `
+  --output evals/results/security-holdout-v2-multi-agent.json
+
+python -m evals.compare `
+  --general-artifact evals/results/security-holdout-v2-general.json `
+  --specialist-artifact evals/results/security-holdout-v2-specialist.json `
+  --multi-agent-artifact evals/results/security-holdout-v2-multi-agent.json
+```
+
+The v2 shard contains four new cases: a mixed unverified-JWT/pagination change, predictable
+password-reset randomness, bearer-token URL exposure, and a high-entropy reset-token negative.
+Its mock runs only validate evaluator plumbing. Model-quality conclusions require the three
+explicit paid runs above and must remain scoped to this shard.
+
 Run one paid DeepSeek case as a guarded trial:
 
 ```powershell

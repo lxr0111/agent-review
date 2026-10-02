@@ -2615,6 +2615,52 @@ git diff --check: passed
 - Prompt v2 是否能在真实调用中减少推测性输出尚未验证；旧 Security Holdout v1 已参与本次开发，只能作为回归集，不能再作为未见盲测；
 - 下一步应先建立新的 Security Architecture Holdout v2，冻结后再运行 General、Security v2 和 Multi-Agent v2，验证质量收益是否能在未见案例上复现。
 
+### 6.16 Security Architecture Holdout v2
+
+#### 要解决的问题
+
+Security Holdout v1 已经用于发现并修复推测性安全影响与重复 Finding，因此它现在属于开发回归数据。继续在 v1 上运行修改后的 Prompt 和 Aggregator，可以验证旧失败是否回归，却不能证明改动对未见输入有效。需要在任何新真实模型输出出现之前，独立设计、标注并冻结第二个 Security 架构分片。
+
+#### 设计选择与行为变化
+
+- 新增 `architecture-security-holdout-v2`，不是对 v1 标签或 Fixture 的覆盖，而是四个全新案例组成的独立分片；
+- 混合案例跨两个文件，同时包含关闭 JWT 签名验证的 Security 缺陷和分页 Slice 少返回一项的 Correctness 缺陷，用于再次测试专业角色互补；
+- 第二个正例使用通用 `random.Random` 生成密码重置码，覆盖此前数据集中没有出现的凭证随机性问题；
+- 第三个正例把 Bearer Access Token 放入浏览器 URL 查询参数，覆盖浏览器历史、代理日志、分析系统和 Referer 传播导致的凭证泄漏；
+- Negative 使用 `secrets.token_urlsafe(32)` 生成高熵密码重置 Token，并只持久化 SHA-256 Digest；PR 契约明确未变更 Caller 负责 TLS、十五分钟过期和单次使用，用于测试 Security Prompt v2 是否还会凭空报告缺失的下游保护；
+- 四个案例全部稳定路由到 `correctness + security`，没有引入 Performance 或 Maintainability Agent，使 General、Security-only 和 Planned Multi-Agent 保持可比较语义；
+- Expected Finding 共四条：Security 三条、Correctness 一条；Severity 为三条 High、一条 Medium；包含一个多缺陷案例、一个多文件案例和一个 Negative；
+- Dataset SHA 冻结为 `d786fddace3bd5a58f75700fe1182edca97768f281bb6ab16014bc45c7ff531b`。
+
+#### 自动化验证证据
+
+冻结测试验证以下内容：
+
+- Dataset Version、SHA、案例数、Expected Finding 数、Negative 数和 Category/Severity 分布固定；
+- 新 Case ID、Head SHA 和 Patch 与 Seed v1、Holdout v1/v2、Aggregation v1、Architecture Security v1 全部不重复；
+- 每个 Expected Range 都位于对应文件的新增行范围内；
+- Planner 对四个案例都只返回 Correctness 与 Security；
+- General、Security Specialist 和 Planned Multi-Agent 的 Mock 自检均为 4/4 Case Pass、Recall=1.0、False Positive=0、Usage=null；
+- Multi-Agent Mock 执行 8 次 Agent 调用，并从 8 条 Fixture Finding 聚合为 4 条。
+
+Mock 输出仍然只证明数据加载、路由、Runner、Aggregator 和 Metrics 自洽，不证明 DeepSeek 能发现这些问题。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek、数据库或 GitHub，也没有生成新的真实 Token、Latency 或质量结论。v2 在首次模型运行前已经完成案例、契约、标签、范围、Matcher Terms、Planner 路由和 SHA 冻结。正式对照必须在提交本批代码、工作区干净后分别生成 General、Security v2 和 Multi-Agent v2 三份不可覆盖工件。
+
+#### 面试怎么讲
+
+> 第一套 Security Holdout 帮我定位了 Specialist 推测下游影响和 Aggregator 重复发布的问题，但一旦我根据它修改 Prompt 和 Identity，它就不再是盲测。我没有在原数据上反复跑到分数变好，而是保留 v1 作为历史回归，再冻结一套完全不同的 v2：未验证 JWT、分页边界、密码重置随机性、Access Token URL 泄漏和一个带明确外部契约的安全负例。所有标签和 SHA 都在调用模型之前固定，这样下一次三架构比较才能检验修改是否泛化，而不是检验是否记住上次失败。
+
+#### 准确边界与尚未完成
+
+- v2 仍只有四个手工构造案例，不代表真实仓库的语言、框架和威胁分布；
+- JWT、随机数和 Token URL 的 Expected Severity 由项目开发者标注，尚未经过多位安全专家独立裁决；
+- Negative 的外部契约来自 PR Body，主要验证模型是否尊重明确边界，不能证明未展示的 Caller 实现真的安全；
+- 数据集现在已经进入仓库开发流程，后续不能根据真实输出静默修改；若发现 Fixture 或标签问题，必须保留 v2 并创建新版本；
+- 下一步只应先提交冻结分片，再由用户显式运行三次付费 DeepSeek 评测。本批不能提前给出多 Agent 是否改进的结论。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2676,12 +2722,13 @@ git diff --check: passed
 | 架构实验工件与离线对照 | 301 | 不可覆盖工件、Provider 前置失败、三架构身份门禁、逐案例解释和旧 baseline 兼容 |
 | Security 架构 Holdout v1 | 306 | 四个新案例、冻结 SHA、历史数据隔离、Planner 路由、三模式 Mock 自测和 Negative 约束 |
 | Security Prompt v2 与 Finding Identity v4 | 310 | 调用链证据约束、问题/修复双代码证据、跨类别保守仲裁、真实输出回放和不同根因保护 |
+| Security 架构 Holdout v2 | 315 | 四个新案例、冻结 SHA、全历史数据隔离、双角色稳定路由、三模式 Mock 自测和契约负例 |
 
 当前最近一次结果：
 
 ```text
-Targeted evidence/aggregation tests: 26 passed
-All tests: 310 passed, 2 third-party deprecation warnings
+Targeted Security architecture holdout v2 tests: 5 passed
+All tests: 315 passed, 2 third-party deprecation warnings
 Ruff: passed
 mypy app evals: passed (100 source files)
 git diff --check: passed
@@ -2722,7 +2769,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 保留 Security Holdout v1 首次结果不变，设计并冻结新的 Security Architecture Holdout v2，用未见案例验证 Security Prompt v2、Identity v4 和 Multi-Agent v2，而不是继续在 v1 上调参；
+1. 提交已经冻结的 Security Architecture Holdout v2，在干净工作区分别生成 General、Security v2 和 Planned Multi-Agent v2 三份真实 DeepSeek 工件并离线比较；
 2. 根据 v2 对照决定是否继续 Multi-Agent；若仍未超过 General，则正式收口实验并进入 GitHub 行级评论；若达到质量/成本门槛，再补 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
 3. Multi-Agent 决策完成后，依次实现行级 Diff 映射与幂等发布、大型 PR 分片与预算控制，最后完成可观测性、README 和演示收尾。
 
