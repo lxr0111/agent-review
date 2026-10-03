@@ -16,7 +16,7 @@ from app.domain.review.report import (
 from app.providers.llm import LLMProvider, MockLLMProvider
 from app.providers.llm.prompt_builder import PROMPT_VERSION
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
-from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
+from app.providers.llm.schemas import LLMReviewFinding, LLMReviewLocation, LLMReviewOutput
 from app.services.ai_review_service import AIReviewService
 
 
@@ -59,6 +59,7 @@ def _finding(
     file_path: str = "src/auth.py",
     severity: FindingSeverity = FindingSeverity.HIGH,
     title: str = "Authorization is bypassed",
+    location: LLMReviewLocation | None = None,
 ) -> LLMReviewFinding:
     return LLMReviewFinding(
         title=title,
@@ -68,6 +69,7 @@ def _finding(
         severity=severity,
         category=FindingCategory.SECURITY,
         confidence=0.95,
+        location=location,
     )
 
 
@@ -106,6 +108,63 @@ def test_ai_review_maps_valid_output_to_domain_report() -> None:
     assert len(provider.prompts) == 1
 
 
+def test_ai_review_keeps_location_on_added_lines() -> None:
+    provider = MockLLMProvider(
+        LLMReviewOutput(
+            summary="One problem was found.",
+            findings=(_finding(location=LLMReviewLocation(start_line=1, end_line=1)),),
+        )
+    )
+
+    report = AIReviewService(provider).review(_context())
+
+    assert report.findings[0].location is not None
+    assert report.findings[0].location.start_line == 1
+    assert report.findings[0].location.end_line == 1
+
+
+def test_ai_review_drops_location_on_deleted_or_context_lines() -> None:
+    changed_file = ChangedFile(
+        path="src/auth.py",
+        status=FileChangeStatus.MODIFIED,
+        additions=1,
+        deletions=1,
+        changes=3,
+        patch="@@ -4,2 +4,2 @@\n context\n-old\n+new",
+    )
+    provider = MockLLMProvider(
+        LLMReviewOutput(
+            summary="One problem was found.",
+            findings=(_finding(location=LLMReviewLocation(start_line=4, end_line=4)),),
+        )
+    )
+
+    report = AIReviewService(provider).review(_context(reviewable_files=(changed_file,)))
+
+    assert report.findings[0].location is None
+
+
+def test_ai_review_drops_location_when_patch_cannot_be_mapped() -> None:
+    changed_file = ChangedFile(
+        path="src/auth.py",
+        status=FileChangeStatus.MODIFIED,
+        additions=1,
+        deletions=0,
+        changes=1,
+        patch=None,
+    )
+    provider = MockLLMProvider(
+        LLMReviewOutput(
+            summary="One problem was found.",
+            findings=(_finding(location=LLMReviewLocation(start_line=1, end_line=1)),),
+        )
+    )
+
+    report = AIReviewService(provider).review(_context(reviewable_files=(changed_file,)))
+
+    assert report.findings[0].location is None
+
+
 def test_ai_review_metadata_exposes_usage_without_changing_domain_report() -> None:
     provider = _UsageProvider(
         LLMReviewOutput(
@@ -124,9 +183,7 @@ def test_ai_review_metadata_exposes_usage_without_changing_domain_report() -> No
 def test_mock_provider_returns_no_usage_metadata() -> None:
     provider = MockLLMProvider()
 
-    result = provider.generate_review(
-        ReviewPrompt(system="review", user="{}", version="review-v1")
-    )
+    result = provider.generate_review(ReviewPrompt(system="review", user="{}", version="review-v1"))
 
     assert result.output.summary
     assert result.usage is None

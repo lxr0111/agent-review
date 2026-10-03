@@ -14,7 +14,7 @@ class SpecialistPromptProfile:
 
 SPECIALIST_PROMPT_PROFILES: dict[AgentRole, SpecialistPromptProfile] = {
     AgentRole.CORRECTNESS: SpecialistPromptProfile(
-        version="review-correctness-v1",
+        version="review-correctness-v2",
         instructions="""Specialist assignment: correctness and reliability.
 - Report only concrete correctness or reliability defects.
 - Focus on violated behavior contracts, boundary conditions, control flow, error handling,
@@ -23,7 +23,7 @@ SPECIALIST_PROMPT_PROFILES: dict[AgentRole, SpecialistPromptProfile] = {
 - Do not report security, performance, maintainability, style, or optional test improvements.""",
     ),
     AgentRole.SECURITY: SpecialistPromptProfile(
-        version="review-security-v2",
+        version="review-security-v3",
         instructions="""Specialist assignment: security.
 - Report only concrete security defects supported by the supplied change.
 - Focus on trust boundaries, injection, authorization, authentication, secrets, unsafe
@@ -37,7 +37,7 @@ SPECIALIST_PROMPT_PROFILES: dict[AgentRole, SpecialistPromptProfile] = {
 - Use only the security category and omit correctness, performance, maintainability, and style.""",
     ),
     AgentRole.PERFORMANCE: SpecialistPromptProfile(
-        version="review-performance-v1",
+        version="review-performance-v2",
         instructions="""Specialist assignment: performance.
 - Report only material performance defects directly demonstrated by the supplied change.
 - Focus on repeated I/O, N+1 access, blocking work in asynchronous code, avoidable
@@ -46,7 +46,7 @@ SPECIALIST_PROMPT_PROFILES: dict[AgentRole, SpecialistPromptProfile] = {
 - Use only the performance category and omit correctness, security, maintainability, and style.""",
     ),
     AgentRole.MAINTAINABILITY: SpecialistPromptProfile(
-        version="review-maintainability-v1",
+        version="review-maintainability-v2",
         instructions="""Specialist assignment: objective maintainability.
 - Report only objective defects such as duplicated business rules, conflicting sources of truth,
   unreachable code, or changes that demonstrably make future behavior inconsistent.

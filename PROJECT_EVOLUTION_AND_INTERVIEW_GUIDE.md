@@ -2177,7 +2177,7 @@ case pass: true
 
 ## 4. 当前能力快照
 
-截至 2026-09-27，系统已经具备：
+截至 2026-10-03，系统已经具备：
 
 ### 4.1 主链路
 
@@ -2186,6 +2186,7 @@ case pass: true
 - PR 元数据和 Diff 获取；
 - Diff 筛选和大小预算；
 - DeepSeek 真实结构化代码评审；
+- Prompt v3 使用带新旧行坐标的 Unified Diff，并在服务端只接受完整映射到新增行的候选位置；
 - Report/Finding 持久化；
 - GitHub Summary Review 发布；
 - 新 commit 自动触发重新评审。
@@ -2244,6 +2245,7 @@ case pass: true
 - 文档和测试不输出 API Key、Webhook Secret 或私钥；
 - 默认 Eval 不加载付费模型；
 - 模型输出仍需经过 Pydantic 和业务白名单校验。
+- 模型给出的行号还需经过本地 Diff 映射验证；缺失、截断或不合法 Patch 会安全降级为无行号 Finding。
 
 ---
 
@@ -2721,6 +2723,65 @@ v1 与全新 v2 两个冻结 Security 分片都没有证明 Planned Multi-Agent 
 - Multi-Agent 当前顺序执行，尚未用并发降低墙钟时间；即使并发能改善延迟，也不会消除约 `2.58x` Token 成本和零新增命中的问题；
 - 本轮工件位于被忽略的 `evals/results/`，可能包含模型生成的代码摘录，应按普通评审数据管理，不能提交敏感仓库内容。
 
+### 6.18 行级评论基础：Unified Diff 映射、Prompt v3 与候选位置校验
+
+#### 要解决的问题
+
+现有 Finding 只有文件路径，GitHub Review 只能发布汇总正文。若直接信任模型生成的行号，模型可能引用旧文件行、上下文行、删除行、Patch 外行号，或者在 GitHub 返回截断 Patch 时猜测位置，最终导致评论错位或发布失败。另一方面，当前数据库只保存 Finding 文本字段，完整 Patch 只存在于评审上下文，因此行号是否合法必须在模型输出转换为领域 Finding 时立即判断，不能延迟到发布阶段再猜。
+
+#### 设计选择
+
+- 新增独立的 Unified Diff 解析器，严格校验每个 Hunk 的旧文件和新文件行数；只有完整、可解析的 Patch 才生成映射；
+- 为 Prompt 中的每一行添加 `[old=...,new=...]` 坐标，并明确 `new_file` 坐标系，让模型只返回新增行位置；
+- LLM Finding 增加必需但可为空的 `location`：有把握时返回 `start_line/end_line`，不能定位时返回 `null`；
+- 领域 Finding 增加可选 `ReviewLineRange`，并保证起始行大于零、结束行不早于起始行；
+- `AIReviewService` 使用本地解析结果二次校验模型位置，只有范围内每一行都是 `+` 新增行时才保留；其他情况不让整次评审失败，而是把位置降级为 `None`；
+- Prompt 发生协议变化，因此 General、四类 Specialist 和 Multi-Agent 聚合版本分别升级；历史 baseline 与实验工件继续保留旧版本号，不改写既有证据；
+- 严格 JSON Schema 会把 nullable `location` 也列入 `required`，同时修复 Schema 清洗误删业务字段 `title` 的边界问题：删除的是 Schema 描述关键字，而不是 `properties` 下同名字段。
+
+#### 修改范围
+
+- `app/domain/review/unified_diff.py`：解析多 Hunk Unified Diff、标注新旧行坐标、记录可评论的新增行集合；
+- `app/domain/review/report.py`：新增领域行范围，并扩展 Finding；
+- `app/providers/llm/schemas.py`、`responses.py`：扩展结构化输出协议和严格 Schema；
+- `app/providers/llm/prompt_builder.py`：生成带坐标 Patch 和行级位置规则的 Prompt v3；
+- `app/services/ai_review_service.py`：校验候选位置并安全降级；
+- Specialist/Aggregator Prompt 版本和相关 Eval 回归断言同步升级；
+- 新增及扩展单元测试，覆盖多 Hunk、空行结束标记、截断 Patch、删除/上下文行、缺失 Patch、合法范围和严格 Schema。
+
+#### 自动化验证证据
+
+本批没有访问网络、数据库、GitHub 或真实模型。验证结果：
+
+```text
+Targeted tests: 123 passed
+All tests: 329 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (101 source files)
+git diff --check: passed
+```
+
+两条 warning 来自 FastAPI/Starlette 测试依赖的弃用提示，不是本批业务逻辑失败。
+
+#### 真实集成证据
+
+本批没有调用 DeepSeek，也没有向真实 GitHub PR 发布行级评论，因此当前没有模型行号准确率、GitHub inline API 成功率、Token 或延迟的新实测数据。Prompt v3 尚未生成新的 live baseline，旧 Prompt v2 baseline 只保留为历史对照，不能代表 v3 质量。
+
+#### 面试怎么讲
+
+> 行级评论不能直接使用模型猜出的行号。我先把 GitHub 返回的 Unified Diff 解析成新旧文件坐标，只把新增行集合暴露为可评论位置；模型返回 nullable 的行范围后，服务端再次校验整个范围是否都落在新增行上。遇到截断、缺失或不合法 Patch 时，系统不会硬发一个可能错位的 inline comment，而是保留 Finding 内容并降级到摘要。这样模型负责语义判断，确定性代码负责位置安全。
+
+> 这一步还修复了一个严格 JSON Schema 的细节：兼容性清洗原本会把描述性 `title` 关键字删除，但也可能误删名为 `title` 的业务属性。我让清洗器区分 Schema 节点与 `properties` 字段表，并用 Provider 请求测试锁住完整 required 字段，避免结构化协议表面通过、实际缺字段。
+
+#### 准确边界与尚未完成
+
+- `location` 目前只存在于模型输出和内存领域对象，尚未写入 ORM 或数据库；Pipeline 保存后重新加载 Report 时会丢失位置；
+- GitHub Publisher 仍然只发布 Summary Review，尚未组装 `comments`、`line/side` 或多行范围参数；
+- 尚未实现“摘要 marker + inline comments”整组幂等发布，也未对真实 GitHub API 做行级联调；
+- GitHub 可能省略或截断大文件 Patch，本批选择安全回退，没有实现本地 clone 后重新计算完整 Diff；
+- 当前只允许连续新增行范围，不支持对删除行或旧文件侧发表评论；
+- Prompt v3 已改变输入与输出协议，后续必须在干净提交上做最小 DeepSeek 试跑和真实 PR 联调，不能沿用 v2 指标声称质量不变。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2783,14 +2844,15 @@ v1 与全新 v2 两个冻结 Security 分片都没有证明 Planned Multi-Agent 
 | Security 架构 Holdout v1 | 306 | 四个新案例、冻结 SHA、历史数据隔离、Planner 路由、三模式 Mock 自测和 Negative 约束 |
 | Security Prompt v2 与 Finding Identity v4 | 310 | 调用链证据约束、问题/修复双代码证据、跨类别保守仲裁、真实输出回放和不同根因保护 |
 | Security 架构 Holdout v2 | 315 | 四个新案例、冻结 SHA、全历史数据隔离、双角色稳定路由、三模式 Mock 自测和契约负例 |
+| 行级评论基础第一批 | 329 | Unified Diff 行映射、Prompt v3、nullable location、服务端新增行校验、安全降级和严格 Schema 回归 |
 
 当前最近一次结果：
 
 ```text
-Targeted Security architecture holdout v2 tests: 5 passed
-All tests: 315 passed, 2 third-party deprecation warnings
+Targeted inline-location tests: 123 passed
+All tests: 329 passed, 2 third-party deprecation warnings
 Ruff: passed
-mypy app evals: passed (100 source files)
+mypy app evals: passed (101 source files)
 git diff --check: passed
 ```
 
@@ -2830,15 +2892,16 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 设计并实现行级 Diff 映射、位置校验、摘要回退和 GitHub Inline Comment 幂等发布；
-2. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
-3. 完成真实 PR 的行级评论联调和最终全量验收，冻结暑期实习版；
-4. 实习版完成后，再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集，不把生产多 Agent 作为当前必做项。
+1. 增加 Finding 行范围 ORM 字段和 Alembic migration，使合法位置经过 Report 持久化与断点恢复后仍然存在；
+2. 实现 GitHub Summary + Inline Comments 整组幂等发布、发布前 SHA 校验和无法定位时的摘要回退；
+3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
+4. 完成 Prompt v3 最小 DeepSeek 试跑、真实 PR 行级评论联调和最终全量验收，冻结暑期实习版；
+5. 实习版完成后，再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集，不把生产多 Agent 作为当前必做项。
 
 ### 9.2 后续能力
 
 - 自动化回归阈值；
-- 行级 Finding 和 GitHub inline comment；
+- 行级 Finding 持久化和 GitHub inline comment 发布；
 - 更大、更接近真实 PR 的评测集；
 - Prompt injection 专项评测；
 - Planner/Reviewer/Validator/Aggregator 多 Agent；

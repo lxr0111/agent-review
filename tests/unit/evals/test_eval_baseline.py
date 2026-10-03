@@ -85,7 +85,7 @@ def test_historical_baseline_without_matcher_metadata_defaults_to_text_v1() -> N
 def test_default_baseline_path_is_stable_and_safe() -> None:
     path = default_baseline_path(_live_evaluation())
 
-    assert path.name == "deepseek-flash__review-v2__seed-v1.json"
+    assert path.name == "deepseek-flash__review-v3__seed-v1.json"
     assert path.parent.name == "baselines"
 
 

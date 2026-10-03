@@ -28,6 +28,18 @@ class ReviewRiskLevel(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewLineRange:
+    start_line: int
+    end_line: int
+
+    def __post_init__(self) -> None:
+        if self.start_line < 1:
+            raise ValueError("Review line range must start at a positive line")
+        if self.end_line < self.start_line:
+            raise ValueError("Review line range end must not precede its start")
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewFinding:
     title: str
     explanation: str
@@ -36,6 +48,7 @@ class ReviewFinding:
     severity: FindingSeverity
     category: FindingCategory
     confidence: float
+    location: ReviewLineRange | None = None
 
 
 @dataclass(frozen=True, slots=True)

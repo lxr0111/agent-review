@@ -14,6 +14,7 @@ def _finding_payload() -> dict[str, object]:
         "severity": "high",
         "category": "security",
         "confidence": 0.93,
+        "location": None,
     }
 
 
@@ -27,6 +28,35 @@ def test_review_output_parses_a_strict_structured_response() -> None:
 
     assert output.findings[0].severity == FindingSeverity.HIGH
     assert output.findings[0].category == FindingCategory.SECURITY
+    assert output.findings[0].location is None
+
+
+def test_review_output_parses_line_location() -> None:
+    payload = _finding_payload()
+    payload["location"] = {"start_line": 12, "end_line": 14}
+
+    finding = LLMReviewFinding.model_validate(payload)
+
+    assert finding.location is not None
+    assert finding.location.start_line == 12
+    assert finding.location.end_line == 14
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        {"start_line": 0, "end_line": 1},
+        {"start_line": 5, "end_line": 4},
+        {"start_line": 1},
+        {"start_line": 1, "end_line": 1, "side": "RIGHT"},
+    ],
+)
+def test_review_output_rejects_invalid_line_location(location: object) -> None:
+    payload = _finding_payload()
+    payload["location"] = location
+
+    with pytest.raises(ValidationError):
+        LLMReviewFinding.model_validate(payload)
 
 
 @pytest.mark.parametrize(

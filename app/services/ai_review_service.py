@@ -4,12 +4,15 @@ from app.domain.review.entities import ReviewContext
 from app.domain.review.exceptions import ReviewOutputValidationError
 from app.domain.review.report import (
     ReviewFinding,
+    ReviewLineRange,
     ReviewReport,
     ReviewRiskLevel,
     derive_review_risk,
 )
+from app.domain.review.unified_diff import UnifiedDiffLineMap, parse_unified_diff
 from app.providers.llm.prompt_builder import PROMPT_VERSION, ReviewPromptBuilder
 from app.providers.llm.protocol import LLMProvider, LLMTokenUsage
+from app.providers.llm.schemas import LLMReviewLocation
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +56,10 @@ class AIReviewService:
         provider_result = self._provider.generate_review(prompt)
         output = provider_result.output
         allowed_paths = {changed_file.path for changed_file in context.reviewable_files}
+        line_maps = {
+            changed_file.path: parse_unified_diff(changed_file.patch)
+            for changed_file in context.reviewable_files
+        }
         findings: list[ReviewFinding] = []
         identities: set[tuple[str, str, str]] = set()
 
@@ -80,6 +87,9 @@ class AIReviewService:
                     severity=candidate.severity,
                     category=candidate.category,
                     confidence=candidate.confidence,
+                    location=_validated_location(
+                        candidate.location, line_maps[candidate.file_path]
+                    ),
                 )
             )
 
@@ -95,3 +105,16 @@ class AIReviewService:
             ),
             usage=provider_result.usage,
         )
+
+
+def _validated_location(
+    candidate: LLMReviewLocation | None,
+    line_map: UnifiedDiffLineMap | None,
+) -> ReviewLineRange | None:
+    if candidate is None or line_map is None:
+        return None
+    start_line = candidate.start_line
+    end_line = candidate.end_line
+    if not line_map.contains_added_range(start_line, end_line):
+        return None
+    return ReviewLineRange(start_line=start_line, end_line=end_line)

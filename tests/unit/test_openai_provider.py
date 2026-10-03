@@ -124,7 +124,10 @@ def test_generate_review_uses_responses_api_json_schema() -> None:
             "severity",
             "category",
             "confidence",
+            "location",
         }
+        location_schema = schema["$defs"]["LLMReviewLocation"]
+        assert set(location_schema["required"]) == {"start_line", "end_line"}
         serialized_schema = json.dumps(schema)
         for removed_keyword in (
             "maxItems",
@@ -132,9 +135,11 @@ def test_generate_review_uses_responses_api_json_schema() -> None:
             "maximum",
             "minLength",
             "minimum",
-            "title",
         ):
             assert f'"{removed_keyword}":' not in serialized_schema
+        assert "title" not in schema
+        assert "title" not in finding_schema
+        assert "title" not in location_schema
         return httpx.Response(
             200,
             json=_response_payload(),

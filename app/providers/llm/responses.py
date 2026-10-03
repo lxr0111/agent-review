@@ -281,16 +281,40 @@ def _review_schema() -> dict[str, object]:
     sanitized = _remove_unsupported_schema_keywords(LLMReviewOutput.model_json_schema())
     if not isinstance(sanitized, dict):
         raise LLMConfigurationError("Review output schema must be a JSON object")
-    return sanitized
+    strict_schema = _require_all_object_properties(sanitized)
+    if not isinstance(strict_schema, dict):
+        raise LLMConfigurationError("Strict review output schema must be a JSON object")
+    return strict_schema
 
 
-def _remove_unsupported_schema_keywords(value: object) -> object:
+def _remove_unsupported_schema_keywords(
+    value: object,
+    *,
+    property_map: bool = False,
+) -> object:
     if isinstance(value, dict):
         return {
-            str(key): _remove_unsupported_schema_keywords(item)
+            str(key): _remove_unsupported_schema_keywords(
+                item,
+                property_map=key == "properties",
+            )
             for key, item in value.items()
-            if key not in _SCHEMA_KEYWORDS_REMOVED_FOR_COMPATIBILITY
+            if property_map or key not in _SCHEMA_KEYWORDS_REMOVED_FOR_COMPATIBILITY
         }
     if isinstance(value, list):
         return [_remove_unsupported_schema_keywords(item) for item in value]
+    return value
+
+
+def _require_all_object_properties(value: object) -> object:
+    """Keep nullable fields required for strict structured-output providers."""
+
+    if isinstance(value, dict):
+        normalized = {str(key): _require_all_object_properties(item) for key, item in value.items()}
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["required"] = list(properties)
+        return normalized
+    if isinstance(value, list):
+        return [_require_all_object_properties(item) for item in value]
     return value

@@ -21,9 +21,7 @@ EXISTING_DATASET_PATHS = (
     Path("evals/cases/review_holdout_v2.json"),
     Path("evals/cases/review_aggregation_v1.json"),
 )
-EXPECTED_DATASET_SHA256 = (
-    "ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e"
-)
+EXPECTED_DATASET_SHA256 = "ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e"
 
 
 class _LiveOutputReplayProvider:
@@ -67,14 +65,10 @@ def test_architecture_security_holdout_is_frozen_and_has_expected_shape() -> Non
     assert sum(len(case.expected_findings) > 1 for case in dataset.cases) == 1
 
     categories = Counter(
-        finding.category
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.category for case in dataset.cases for finding in case.expected_findings
     )
     severities = Counter(
-        finding.severity
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.severity for case in dataset.cases for finding in case.expected_findings
     )
     assert categories == {
         FindingCategory.SECURITY: 3,
@@ -90,9 +84,7 @@ def test_architecture_security_holdout_is_distinct_from_existing_datasets() -> N
     dataset = load_dataset(DATASET_PATH)
     existing = tuple(load_dataset(path) for path in EXISTING_DATASET_PATHS)
     existing_case_ids = {case.id for item in existing for case in item.cases}
-    existing_head_shas = {
-        case.pull_request.head_sha for item in existing for case in item.cases
-    }
+    existing_head_shas = {case.pull_request.head_sha for item in existing for case in item.cases}
     existing_patches = {
         changed_file.patch
         for item in existing
@@ -101,14 +93,10 @@ def test_architecture_security_holdout_is_distinct_from_existing_datasets() -> N
     }
 
     assert {case.id for case in dataset.cases}.isdisjoint(existing_case_ids)
-    assert {
-        case.pull_request.head_sha for case in dataset.cases
-    }.isdisjoint(existing_head_shas)
-    assert {
-        changed_file.patch
-        for case in dataset.cases
-        for changed_file in case.files
-    }.isdisjoint(existing_patches)
+    assert {case.pull_request.head_sha for case in dataset.cases}.isdisjoint(existing_head_shas)
+    assert {changed_file.patch for case in dataset.cases for changed_file in case.files}.isdisjoint(
+        existing_patches
+    )
 
 
 def test_architecture_security_holdout_ranges_reference_added_lines() -> None:
@@ -126,10 +114,7 @@ def test_architecture_security_holdout_routes_only_correctness_and_security() ->
     dataset = load_dataset(DATASET_PATH)
     planner = DeterministicReviewPlanner()
 
-    assert {
-        case.id: planner.plan(case.to_review_context()).roles
-        for case in dataset.cases
-    } == {
+    assert {case.id: planner.plan(case.to_review_context()).roles for case in dataset.cases} == {
         "architecture-security-api-key-prefix-and-lifetime": (
             AgentRole.CORRECTNESS,
             AgentRole.SECURITY,
@@ -236,8 +221,8 @@ def test_live_api_key_outputs_replay_without_the_duplicate_security_impact() -> 
     )
     provider = _LiveOutputReplayProvider(
         {
-            "review-correctness-v1": correctness,
-            "review-security-v2": security,
+            "review-correctness-v2": correctness,
+            "review-security-v3": security,
         }
     )
     orchestrator = PlannedReviewOrchestrator(

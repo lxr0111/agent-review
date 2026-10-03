@@ -16,9 +16,7 @@ EXISTING_DATASET_PATHS = (
     Path("evals/cases/review_aggregation_v1.json"),
     Path("evals/cases/review_architecture_security_holdout_v1.json"),
 )
-EXPECTED_DATASET_SHA256 = (
-    "d786fddace3bd5a58f75700fe1182edca97768f281bb6ab16014bc45c7ff531b"
-)
+EXPECTED_DATASET_SHA256 = "d786fddace3bd5a58f75700fe1182edca97768f281bb6ab16014bc45c7ff531b"
 EXPECTED_ROLES = (AgentRole.CORRECTNESS, AgentRole.SECURITY)
 
 
@@ -34,14 +32,10 @@ def test_architecture_security_holdout_v2_is_frozen_and_has_expected_shape() -> 
     assert sum(len(case.files) > 1 for case in dataset.cases) == 1
 
     categories = Counter(
-        finding.category
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.category for case in dataset.cases for finding in case.expected_findings
     )
     severities = Counter(
-        finding.severity
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.severity for case in dataset.cases for finding in case.expected_findings
     )
     assert categories == {
         FindingCategory.SECURITY: 3,
@@ -57,9 +51,7 @@ def test_architecture_security_holdout_v2_is_distinct_from_all_existing_data() -
     dataset = load_dataset(DATASET_PATH)
     existing = tuple(load_dataset(path) for path in EXISTING_DATASET_PATHS)
     existing_case_ids = {case.id for item in existing for case in item.cases}
-    existing_head_shas = {
-        case.pull_request.head_sha for item in existing for case in item.cases
-    }
+    existing_head_shas = {case.pull_request.head_sha for item in existing for case in item.cases}
     existing_patches = {
         changed_file.patch
         for item in existing
@@ -68,14 +60,10 @@ def test_architecture_security_holdout_v2_is_distinct_from_all_existing_data() -
     }
 
     assert {case.id for case in dataset.cases}.isdisjoint(existing_case_ids)
-    assert {
-        case.pull_request.head_sha for case in dataset.cases
-    }.isdisjoint(existing_head_shas)
-    assert {
-        changed_file.patch
-        for case in dataset.cases
-        for changed_file in case.files
-    }.isdisjoint(existing_patches)
+    assert {case.pull_request.head_sha for case in dataset.cases}.isdisjoint(existing_head_shas)
+    assert {changed_file.patch for case in dataset.cases for changed_file in case.files}.isdisjoint(
+        existing_patches
+    )
 
 
 def test_architecture_security_holdout_v2_ranges_reference_added_lines() -> None:
@@ -93,10 +81,9 @@ def test_architecture_security_holdout_v2_routes_only_expected_roles() -> None:
     dataset = load_dataset(DATASET_PATH)
     planner = DeterministicReviewPlanner()
 
-    assert {
-        case.id: planner.plan(case.to_review_context()).roles
-        for case in dataset.cases
-    } == {case.id: EXPECTED_ROLES for case in dataset.cases}
+    assert {case.id: planner.plan(case.to_review_context()).roles for case in dataset.cases} == {
+        case.id: EXPECTED_ROLES for case in dataset.cases
+    }
 
 
 def test_architecture_security_holdout_v2_mock_paths_are_self_tests_only() -> None:
@@ -114,8 +101,8 @@ def test_architecture_security_holdout_v2_mock_paths_are_self_tests_only() -> No
         assert result.metrics.false_positives == 0
         assert result.metrics.usage.total_tokens is None
 
-    assert specialist.prompt_version == "review-security-v2"
-    assert multi_agent.prompt_version == "multi-agent-v2"
+    assert specialist.prompt_version == "review-security-v3"
+    assert multi_agent.prompt_version == "multi-agent-v3"
     assert multi_agent.finding_identity_version == "finding-text-v4"
     assert multi_agent.metrics.total_agent_calls == 8
     assert multi_agent.metrics.pre_aggregation_findings == 8

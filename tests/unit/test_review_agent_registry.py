@@ -103,7 +103,7 @@ def test_security_prompt_v2_requires_proven_security_impact() -> None:
     agent.review(_context())
 
     prompt = provider.prompts[-1]
-    assert prompt.version == "review-security-v2"
+    assert prompt.version == "review-security-v3"
     assert "hypothetical downstream consumer is not evidence" in prompt.system
     assert "participates in a security-sensitive decision" in prompt.system
     assert "display or functional-contract error" in prompt.system

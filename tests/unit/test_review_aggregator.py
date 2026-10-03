@@ -119,7 +119,7 @@ def test_aggregator_merges_duplicate_and_prefers_role_aligned_label() -> None:
     assert isinstance(aggregator, ReviewAggregator)
     assert result.report.findings == (specialist,)
     assert result.finding_identity_version == "finding-text-v4"
-    assert result.report.prompt_version == "multi-agent-v2"
+    assert result.report.prompt_version == "multi-agent-v3"
     assert result.report.risk_level == ReviewRiskLevel.HIGH
     assert result.report.prompt_version == AGGREGATOR_PROMPT_VERSION
     assert [decision.action for decision in result.decisions] == [
@@ -294,8 +294,7 @@ def test_aggregator_replays_live_lifetime_conflict_without_duplicate_security_im
             "current time, so a still-valid key gets a negative remaining lifetime."
         ),
         suggestion=(
-            "Compute the other direction with "
-            "`return int((expires_at - now).total_seconds())`."
+            "Compute the other direction with `return int((expires_at - now).total_seconds())`."
         ),
         file_path="src/api_keys.py",
         category=FindingCategory.CORRECTNESS,
@@ -325,7 +324,7 @@ def test_aggregator_replays_live_lifetime_conflict_without_duplicate_security_im
 
     assert result.report.findings == (correctness,)
     assert result.finding_identity_version == "finding-text-v4"
-    assert result.report.prompt_version == "multi-agent-v2"
+    assert result.report.prompt_version == "multi-agent-v3"
     assert [decision.action for decision in result.decisions] == [
         AggregationAction.KEPT,
         AggregationAction.MERGED,

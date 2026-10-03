@@ -24,7 +24,7 @@ from app.services.review_finding_validator import (
     ValidatedAgentFinding,
 )
 
-AGGREGATOR_PROMPT_VERSION = "multi-agent-v2"
+AGGREGATOR_PROMPT_VERSION = "multi-agent-v3"
 
 
 @runtime_checkable
@@ -306,11 +306,7 @@ class DeterministicReviewAggregator:
     @staticmethod
     def _model_name(results: tuple[AgentReviewResult, ...]) -> str | None:
         model_names = sorted(
-            {
-                result.report.model_name
-                for result in results
-                if result.report.model_name is not None
-            }
+            {result.report.model_name for result in results if result.report.model_name is not None}
         )
         if not model_names:
             return None

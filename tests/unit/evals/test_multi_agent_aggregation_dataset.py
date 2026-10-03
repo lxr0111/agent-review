@@ -15,9 +15,7 @@ from evals.runner import run_mock_multi_agent_evaluation
 from evals.schemas import EvalCase, load_dataset
 
 DATASET_PATH = Path("evals/cases/review_aggregation_v1.json")
-EXPECTED_DATASET_SHA256 = (
-    "f85b494489d1d5c52cf370f3d5e57a80143090056205f237659252524caf19b5"
-)
+EXPECTED_DATASET_SHA256 = "f85b494489d1d5c52cf370f3d5e57a80143090056205f237659252524caf19b5"
 
 
 class _ScriptedRoleProvider:
@@ -87,9 +85,7 @@ def test_aggregation_dataset_is_frozen_and_covers_required_shapes() -> None:
     assert sum(len(case.files) > 1 for case in dataset.cases) == 1
 
     categories = Counter(
-        finding.category
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.category for case in dataset.cases for finding in case.expected_findings
     )
     assert categories == {
         FindingCategory.SECURITY: 2,
@@ -103,10 +99,7 @@ def test_aggregation_dataset_plans_expected_specialists() -> None:
     planner = DeterministicReviewPlanner()
     dataset = load_dataset(DATASET_PATH)
 
-    assert {
-        case.id: planner.plan(case.to_review_context()).roles
-        for case in dataset.cases
-    } == {
+    assert {case.id: planner.plan(case.to_review_context()).roles for case in dataset.cases} == {
         "aggregation-overlap-sql-injection-n-plus-one": (
             AgentRole.CORRECTNESS,
             AgentRole.SECURITY,
@@ -147,7 +140,7 @@ def test_overlap_case_merges_duplicate_and_preserves_distinct_root_cause() -> No
     shared_code = "`query = f\"SELECT * FROM users WHERE email = '{email}'\"`"
     provider = _ScriptedRoleProvider(
         {
-            "review-correctness-v1": _output(
+            "review-correctness-v2": _output(
                 _finding(
                     title="SQL injection from interpolated email query",
                     explanation=(
@@ -161,7 +154,7 @@ def test_overlap_case_merges_duplicate_and_preserves_distinct_root_cause() -> No
                     confidence=0.90,
                 )
             ),
-            "review-security-v2": _output(
+            "review-security-v3": _output(
                 _finding(
                     title="SQL injection through interpolated email query",
                     explanation=(
@@ -175,7 +168,7 @@ def test_overlap_case_merges_duplicate_and_preserves_distinct_root_cause() -> No
                     confidence=0.97,
                 )
             ),
-            "review-performance-v1": _output(
+            "review-performance-v2": _output(
                 _finding(
                     title="N+1 user query executed once per email",
                     explanation=(
@@ -242,7 +235,7 @@ def test_adjacent_issues_with_shared_code_evidence_remain_distinct() -> None:
     shared_code = "`open(UPLOAD_ROOT / filename, 'rb')`"
     provider = _ScriptedRoleProvider(
         {
-            "review-correctness-v1": _output(
+            "review-correctness-v2": _output(
                 _finding(
                     title="Upload file handle is never closed",
                     explanation=(
@@ -256,7 +249,7 @@ def test_adjacent_issues_with_shared_code_evidence_remain_distinct() -> None:
                     confidence=0.93,
                 )
             ),
-            "review-security-v2": _output(
+            "review-security-v3": _output(
                 _finding(
                     title="Unvalidated upload filename permits path traversal",
                     explanation=(
@@ -283,22 +276,16 @@ def test_adjacent_issues_with_shared_code_evidence_remain_distinct() -> None:
     assert result.post_aggregation_finding_count == 2
     assert result.merged_finding_count == 0
     assert result.aggregation_conflicts == ()
-    assert len(
-        {
-            decision.canonical_fingerprint
-            for decision in result.aggregation_decisions
-        }
-    ) == 2
+    assert len({decision.canonical_fingerprint for decision in result.aggregation_decisions}) == 2
     assert all(
-        decision.action == AggregationAction.KEPT
-        for decision in result.aggregation_decisions
+        decision.action == AggregationAction.KEPT for decision in result.aggregation_decisions
     )
 
 
 def test_live_path_paraphrases_merge_without_hiding_resource_finding() -> None:
     provider = _ScriptedRoleProvider(
         {
-            "review-correctness-v1": _output(
+            "review-correctness-v2": _output(
                 _finding(
                     title="Unvalidated filename allows escaping the upload root",
                     explanation=(
@@ -329,7 +316,7 @@ def test_live_path_paraphrases_merge_without_hiding_resource_finding() -> None:
                     confidence=0.85,
                 ),
             ),
-            "review-security-v2": _output(
+            "review-security-v3": _output(
                 _finding(
                     title="Path traversal / arbitrary file read in read_upload",
                     explanation=(
@@ -380,7 +367,7 @@ def test_live_path_paraphrases_merge_without_hiding_resource_finding() -> None:
 def test_cross_file_case_records_only_specialist_unique_contributions() -> None:
     provider = _ScriptedRoleProvider(
         {
-            "review-performance-v1": _output(
+            "review-performance-v2": _output(
                 _finding(
                     title="N+1 customer lookup inside the order loop",
                     explanation=(
@@ -394,7 +381,7 @@ def test_cross_file_case_records_only_specialist_unique_contributions() -> None:
                     confidence=0.95,
                 )
             ),
-            "review-maintainability-v1": _output(
+            "review-maintainability-v2": _output(
                 _finding(
                     title="Free-shipping threshold duplicated across three channels",
                     explanation=(

@@ -1,9 +1,10 @@
 import json
 
-from app.domain.review.entities import ReviewContext
+from app.domain.review.entities import ChangedFile, ReviewContext
+from app.domain.review.unified_diff import parse_unified_diff
 from app.providers.llm.protocol import ReviewPrompt
 
-PROMPT_VERSION = "review-v2"
+PROMPT_VERSION = "review-v3"
 MAX_PR_BODY_CHARACTERS = 10_000
 
 SYSTEM_PROMPT = """You are a senior software engineer performing a pull request review.
@@ -34,6 +35,11 @@ Finding policy:
   test recommendation in the underlying defect's suggestion. Use the testing category only when
   changed test code is itself incorrect or an explicit test/coverage claim is contradicted.
 - Every finding must reference one exact file_path from reviewable_files.
+- Every finding must include location. Use null when the issue cannot be placed confidently on
+  one or more consecutive added lines. Otherwise use new-file line numbers shown as new=N in the
+  annotated patch; every line from start_line through end_line must be an added '+' line.
+- Never use deleted-side coordinates, old-file coordinates, context-only lines, or guessed line
+  numbers. A null location is preferable to an approximate location.
 - Keep titles, explanations, and suggestions concise and actionable.
 
 Severity rubric:
@@ -51,7 +57,7 @@ Severity rubric:
 Use confidence from 0.0 to 1.0 and keep the response concise.
 
 Return a structured object containing summary and findings. Each finding must contain title,
-explanation, suggestion, file_path, severity, category, and confidence."""
+explanation, suggestion, file_path, severity, category, confidence, and location."""
 
 
 class ReviewPromptBuilder:
@@ -75,15 +81,7 @@ class ReviewPromptBuilder:
                 "author_login": pull_request.author_login,
             },
             "reviewable_files": [
-                {
-                    "path": changed_file.path,
-                    "status": changed_file.status.value,
-                    "previous_path": changed_file.previous_path,
-                    "additions": changed_file.additions,
-                    "deletions": changed_file.deletions,
-                    "patch": changed_file.patch,
-                }
-                for changed_file in context.reviewable_files
+                _reviewable_file_payload(changed_file) for changed_file in context.reviewable_files
             ],
             "skipped_files": [
                 {
@@ -98,3 +96,17 @@ class ReviewPromptBuilder:
             user=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             version=self.prompt_version,
         )
+
+
+def _reviewable_file_payload(changed_file: ChangedFile) -> dict[str, object]:
+    parsed_patch = parse_unified_diff(changed_file.patch)
+    return {
+        "path": changed_file.path,
+        "status": changed_file.status.value,
+        "previous_path": changed_file.previous_path,
+        "additions": changed_file.additions,
+        "deletions": changed_file.deletions,
+        "patch": (parsed_patch.annotated_patch if parsed_patch is not None else changed_file.patch),
+        "inline_location_available": parsed_patch is not None,
+        "line_coordinate_system": "new_file",
+    }

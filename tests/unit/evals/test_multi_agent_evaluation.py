@@ -45,7 +45,7 @@ class _RoleAwareConflictProvider:
     model_name = "conflict-test-model"
 
     def generate_review(self, prompt: ReviewPrompt) -> LLMReviewResult:
-        is_security = prompt.version == "review-security-v2"
+        is_security = prompt.version == "review-security-v3"
         return LLMReviewResult(
             output=LLMReviewOutput(
                 summary="One issue found.",
@@ -59,15 +59,9 @@ class _RoleAwareConflictProvider:
                         suggestion="Use a parameterized query.",
                         file_path="src/users.py",
                         category=(
-                            FindingCategory.SECURITY
-                            if is_security
-                            else FindingCategory.CORRECTNESS
+                            FindingCategory.SECURITY if is_security else FindingCategory.CORRECTNESS
                         ),
-                        severity=(
-                            FindingSeverity.HIGH
-                            if is_security
-                            else FindingSeverity.MEDIUM
-                        ),
+                        severity=(FindingSeverity.HIGH if is_security else FindingSeverity.MEDIUM),
                         confidence=0.95 if is_security else 0.90,
                     ),
                 ),
@@ -77,11 +71,7 @@ class _RoleAwareConflictProvider:
 
 
 def _security_case() -> EvalCase:
-    return next(
-        case
-        for case in load_dataset(DATASET_PATH).cases
-        if case.id == SECURITY_CASE_ID
-    )
+    return next(case for case in load_dataset(DATASET_PATH).cases if case.id == SECURITY_CASE_ID)
 
 
 def _output(case: EvalCase) -> LLMReviewOutput:
@@ -92,8 +82,7 @@ def _output(case: EvalCase) -> LLMReviewOutput:
             LLMReviewFinding(
                 title=expected.description,
                 explanation=(
-                    "Matching concepts: "
-                    + "; ".join(group[0] for group in expected.match_terms)
+                    "Matching concepts: " + "; ".join(group[0] for group in expected.match_terms)
                 ),
                 suggestion="Use a parameterized query.",
                 file_path=expected.file_path,
@@ -143,8 +132,7 @@ def test_mock_multi_agent_runner_self_tests_planning_and_aggregation() -> None:
     ]
     assert [execution.finding_count for execution in case.agent_executions] == [1, 1]
     assert all(
-        len(execution.findings) == execution.finding_count
-        for execution in case.agent_executions
+        len(execution.findings) == execution.finding_count for execution in case.agent_executions
     )
     assert case.post_aggregation_finding_count == 1
     assert [decision.action for decision in case.aggregation_decisions] == [
@@ -155,12 +143,7 @@ def test_mock_multi_agent_runner_self_tests_planning_and_aggregation() -> None:
         AgentRole.SECURITY,
         AgentRole.CORRECTNESS,
     ]
-    assert len(
-        {
-            decision.canonical_fingerprint
-            for decision in case.aggregation_decisions
-        }
-    ) == 1
+    assert len({decision.canonical_fingerprint for decision in case.aggregation_decisions}) == 1
     assert all(decision.reason for decision in case.aggregation_decisions)
     assert case.aggregation_conflicts == ()
     assert {
@@ -211,8 +194,8 @@ def test_live_multi_agent_runner_sums_usage_and_reproducibility_metadata() -> No
     assert result.metrics.usage.output_tokens == 60
     assert result.metrics.usage.total_tokens == 200
     assert [prompt.version for prompt in provider.prompts] == [
-        "review-correctness-v1",
-        "review-security-v2",
+        "review-correctness-v2",
+        "review-security-v3",
     ]
 
 
@@ -222,10 +205,7 @@ def test_multi_agent_case_preserves_raw_labels_and_explains_conflict_resolution(
 
     result = evaluate_multi_agent_case(case, _orchestrator(provider))
 
-    raw_findings = {
-        execution.role: execution.findings[0]
-        for execution in result.agent_executions
-    }
+    raw_findings = {execution.role: execution.findings[0] for execution in result.agent_executions}
     assert raw_findings[AgentRole.CORRECTNESS].category == FindingCategory.CORRECTNESS
     assert raw_findings[AgentRole.CORRECTNESS].severity == FindingSeverity.MEDIUM
     assert raw_findings[AgentRole.SECURITY].category == FindingCategory.SECURITY
@@ -245,12 +225,8 @@ def test_multi_agent_case_preserves_raw_labels_and_explains_conflict_resolution(
         "severity": ("high", ("high", "medium")),
     }
     assert all(conflict.reason for conflict in result.aggregation_conflicts)
-    assert {
-        conflict.canonical_fingerprint
-        for conflict in result.aggregation_conflicts
-    } == {
-        decision.canonical_fingerprint
-        for decision in result.aggregation_decisions
+    assert {conflict.canonical_fingerprint for conflict in result.aggregation_conflicts} == {
+        decision.canonical_fingerprint for decision in result.aggregation_decisions
     }
 
 

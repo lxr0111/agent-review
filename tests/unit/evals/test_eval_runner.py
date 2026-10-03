@@ -85,10 +85,10 @@ def test_mock_runner_can_self_test_one_explicit_specialist() -> None:
     )
 
     assert result.agent_role == AgentRole.SECURITY
-    assert result.prompt_version == "review-security-v2"
+    assert result.prompt_version == "review-security-v3"
     assert result.executed_case_count == 1
     assert result.cases[0].agent_role == AgentRole.SECURITY
-    assert result.cases[0].prompt_version == "review-security-v2"
+    assert result.cases[0].prompt_version == "review-security-v3"
     assert result.metrics.case_pass_rate == 1.0
 
 
@@ -292,7 +292,7 @@ def test_live_runner_captures_reproducibility_and_usage_metadata() -> None:
     assert result.provider == "deepseek"
     assert result.agent_role == AgentRole.GENERAL
     assert result.model_name == "usage-test-model"
-    assert result.prompt_version == "review-v2"
+    assert result.prompt_version == "review-v3"
     assert result.is_model_baseline is False
     assert result.dataset_case_count == 10
     assert result.executed_case_count == 1
@@ -339,11 +339,11 @@ def test_live_runner_records_specialist_prompt_role_and_usage() -> None:
     )
 
     assert result.agent_role == AgentRole.SECURITY
-    assert result.prompt_version == "review-security-v2"
+    assert result.prompt_version == "review-security-v3"
     assert result.cases[0].agent_role == AgentRole.SECURITY
-    assert result.cases[0].prompt_version == "review-security-v2"
+    assert result.cases[0].prompt_version == "review-security-v3"
     assert result.metrics.usage.total_tokens == 100
-    assert provider.prompts[0].version == "review-security-v2"
+    assert provider.prompts[0].version == "review-security-v3"
     assert "Specialist assignment: security" in provider.prompts[0].system
 
 
@@ -563,9 +563,7 @@ def test_live_cli_runs_only_after_explicit_flags_and_closes_provider(
     monkeypatch,
     capsys,
 ) -> None:
-    provider = _UsageProvider(
-        LLMReviewOutput(summary="No issue found.", findings=())
-    )
+    provider = _UsageProvider(LLMReviewOutput(summary="No issue found.", findings=()))
     monkeypatch.setattr(
         "evals.runner.collect_git_state",
         lambda: GitState(commit="abc123", dirty=False),
@@ -598,9 +596,7 @@ def test_live_cli_saves_full_baseline_only_with_explicit_flag(
     tmp_path: Path,
     capsys,
 ) -> None:
-    provider = _UsageProvider(
-        LLMReviewOutput(summary="No issue found.", findings=())
-    )
+    provider = _UsageProvider(LLMReviewOutput(summary="No issue found.", findings=()))
     output = tmp_path / "deepseek-baseline.json"
     monkeypatch.setattr(
         "evals.runner.collect_git_state",
