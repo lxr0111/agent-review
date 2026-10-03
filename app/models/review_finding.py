@@ -40,6 +40,12 @@ class ReviewFindingRecord(TimestampMixin, Base):
             "confidence >= 0 AND confidence <= 1",
             name="ck_review_finding_confidence_range",
         ),
+        CheckConstraint(
+            "((start_line IS NULL AND end_line IS NULL) OR "
+            "(start_line IS NOT NULL AND end_line IS NOT NULL "
+            "AND start_line >= 1 AND end_line >= start_line))",
+            name="ck_review_finding_line_range_valid",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -59,5 +65,7 @@ class ReviewFindingRecord(TimestampMixin, Base):
         Enum(FindingCategory, native_enum=False, length=30), nullable=False
     )
     confidence: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    start_line: Mapped[int | None] = mapped_column(Integer)
+    end_line: Mapped[int | None] = mapped_column(Integer)
 
     review_report: Mapped["ReviewReportRecord"] = relationship(back_populates="findings")

@@ -39,6 +39,17 @@ class ReviewLineRange:
             raise ValueError("Review line range end must not precede its start")
 
 
+def optional_review_line_range(
+    start_line: int | None,
+    end_line: int | None,
+) -> ReviewLineRange | None:
+    if start_line is None and end_line is None:
+        return None
+    if start_line is None or end_line is None:
+        raise ValueError("Review line range must contain both start and end lines")
+    return ReviewLineRange(start_line=start_line, end_line=end_line)
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewFinding:
     title: str

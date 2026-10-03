@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -8,7 +9,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.domain.review.entities import PullRequestReview, PullRequestSnapshot
 from app.domain.review.enums import ReviewPublicationProvider, ReviewPublicationStatus, ReviewStatus
 from app.domain.review.exceptions import PullRequestHeadChanged
-from app.domain.review.report import ReviewReport, ReviewRiskLevel
+from app.domain.review.report import (
+    FindingCategory,
+    FindingSeverity,
+    ReviewFinding,
+    ReviewLineRange,
+    ReviewReport,
+    ReviewRiskLevel,
+    derive_review_risk,
+)
 from app.models import Base
 from app.models.review_publication import ReviewPublicationRecord
 from app.models.review_task import ReviewTask
@@ -16,7 +25,7 @@ from app.providers.github.exceptions import GitHubTransientError
 from app.repositories.review_publication_repository import ReviewPublicationRepository
 from app.repositories.review_report_repository import ReviewReportRepository
 from app.repositories.review_task_repository import ReviewTaskRepository
-from app.services.review_markdown_formatter import review_marker
+from app.services.review_markdown_formatter import ReviewMarkdownFormatter, review_marker
 from app.services.review_publication_service import ReviewPublicationService
 from app.services.review_report_service import ReviewReportService
 
@@ -123,7 +132,20 @@ class FakeGitHubProvider:
         assert pull_request_number == 7
 
 
-def _task_with_report(session: Session) -> tuple[ReviewTask, str]:
+class CapturingFormatter(ReviewMarkdownFormatter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.report: ReviewReport | None = None
+
+    def format(self, report: ReviewReport, *, task_id: UUID, report_digest: str) -> str:
+        self.report = report
+        return super().format(report, task_id=task_id, report_digest=report_digest)
+
+
+def _task_with_report(
+    session: Session,
+    report: ReviewReport | None = None,
+) -> tuple[ReviewTask, str]:
     task = ReviewTask(
         repository="owner/repository",
         github_repository_id=1001,
@@ -138,7 +160,7 @@ def _task_with_report(session: Session) -> tuple[ReviewTask, str]:
     )
     session.add(task)
     session.commit()
-    report = ReviewReport(
+    selected_report = report or ReviewReport(
         summary="No actionable problems were found.",
         risk_level=ReviewRiskLevel.NONE,
         findings=(),
@@ -147,16 +169,21 @@ def _task_with_report(session: Session) -> tuple[ReviewTask, str]:
         reviewed_file_count=1,
         skipped_file_count=0,
     )
-    record = ReviewReportService(ReviewReportRepository(session)).save(task.id, report)
+    record = ReviewReportService(ReviewReportRepository(session)).save(task.id, selected_report)
     return task, record.content_digest
 
 
-def _service(session: Session, github: FakeGitHubProvider) -> ReviewPublicationService:
+def _service(
+    session: Session,
+    github: FakeGitHubProvider,
+    formatter: ReviewMarkdownFormatter | None = None,
+) -> ReviewPublicationService:
     return ReviewPublicationService(
         review_tasks=ReviewTaskRepository(session),
         review_reports=ReviewReportRepository(session),
         publications=ReviewPublicationRepository(session),
         github=github,
+        formatter=formatter,
         clock=lambda: PUBLISHED_AT,
     )
 
@@ -177,6 +204,39 @@ def test_publish_creates_summary_review_and_persists_receipt(session: Session) -
     assert publication.external_review_id == 9001
     assert publication.attempt_count == 1
     assert publication.published_at == PUBLISHED_AT.replace(tzinfo=None)
+
+
+def test_publish_restores_persisted_finding_location(session: Session) -> None:
+    finding = ReviewFinding(
+        title="Missing empty-input guard",
+        explanation="An empty list causes division by zero.",
+        suggestion="Reject empty input before dividing.",
+        file_path="src/statistics.py",
+        severity=FindingSeverity.MEDIUM,
+        category=FindingCategory.CORRECTNESS,
+        confidence=0.95,
+        location=ReviewLineRange(start_line=12, end_line=13),
+    )
+    report = ReviewReport(
+        summary="One correctness problem was found.",
+        risk_level=derive_review_risk((finding,)),
+        findings=(finding,),
+        model_name="mock-review-model",
+        prompt_version="review-v3",
+        reviewed_file_count=1,
+        skipped_file_count=0,
+    )
+    task, _ = _task_with_report(session, report)
+    github = FakeGitHubProvider(session)
+    formatter = CapturingFormatter()
+
+    _service(session, github, formatter).publish(task.id)
+
+    assert formatter.report is not None
+    assert formatter.report.findings[0].location == ReviewLineRange(
+        start_line=12,
+        end_line=13,
+    )
 
 
 def test_repeated_publish_returns_stored_receipt_without_github_call(session: Session) -> None:

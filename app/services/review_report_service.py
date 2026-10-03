@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from app.domain.review.report import ReviewFinding, ReviewReport, derive_review_risk
+from app.domain.review.report import (
+    ReviewFinding,
+    ReviewReport,
+    derive_review_risk,
+    optional_review_line_range,
+)
 from app.models.review_finding import ReviewFindingRecord
 from app.models.review_report import ReviewReportRecord
 from app.repositories.review_report_repository import ReviewReportRepository
@@ -66,6 +71,10 @@ class ReviewReportService:
                     severity=finding.severity,
                     category=finding.category,
                     confidence=float(finding.confidence),
+                    location=optional_review_line_range(
+                        finding.start_line,
+                        finding.end_line,
+                    ),
                 )
                 for finding in record.findings
             ),
@@ -109,6 +118,8 @@ def _finding_record(finding: ReviewFinding, position: int) -> ReviewFindingRecor
         severity=finding.severity,
         category=finding.category,
         confidence=Decimal(str(finding.confidence)),
+        start_line=finding.location.start_line if finding.location is not None else None,
+        end_line=finding.location.end_line if finding.location is not None else None,
     )
 
 
@@ -129,6 +140,14 @@ def _report_digest(report: ReviewReport) -> str:
                 "severity": finding.severity.value,
                 "category": finding.category.value,
                 "confidence": finding.confidence,
+                "location": (
+                    {
+                        "start_line": finding.location.start_line,
+                        "end_line": finding.location.end_line,
+                    }
+                    if finding.location is not None
+                    else None
+                ),
             }
             for finding in report.findings
         ],

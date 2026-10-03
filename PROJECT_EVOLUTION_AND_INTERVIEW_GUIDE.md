@@ -2187,7 +2187,7 @@ case pass: true
 - Diff 筛选和大小预算；
 - DeepSeek 真实结构化代码评审；
 - Prompt v3 使用带新旧行坐标的 Unified Diff，并在服务端只接受完整映射到新增行的候选位置；
-- Report/Finding 持久化；
+- Report/Finding（包含已验证的新文件行范围）持久化；
 - GitHub Summary Review 发布；
 - 新 commit 自动触发重新评审。
 
@@ -2782,6 +2782,61 @@ git diff --check: passed
 - 当前只允许连续新增行范围，不支持对删除行或旧文件侧发表评论；
 - Prompt v3 已改变输入与输出协议，后续必须在干净提交上做最小 DeepSeek 试跑和真实 PR 联调，不能沿用 v2 指标声称质量不变。
 
+### 6.19 行级评论基础第二批：Finding 行范围持久化与恢复
+
+#### 要解决的问题
+
+第一批已经能从 Unified Diff 得到安全的新文件行号，并在 `AIReviewService` 中拒绝删除行、上下文行和 Patch 外位置，但 `ReviewFinding.location` 只存在于内存。生产 Pipeline 在模型评审后先保存 Report，Publication 和故障重试会重新从数据库加载 Report；如果数据库不保存位置，行号会在这个阶段丢失，后续 GitHub Publisher 无法可靠生成 inline comments。
+
+#### 设计选择
+
+- 在 `review_findings` 增加 nullable 的 `start_line`、`end_line`，不保存完整 Patch，也不扩大敏感模型输入的持久化范围；
+- 两个字段必须同时为空或同时存在；存在时要求 `start_line >= 1` 且 `end_line >= start_line`，由领域对象与数据库 Check Constraint 双重保护；
+- Migration `20261003_0006` 从当前 `20260907_0005` head 线性升级，已有 Finding 自动保持两个字段为 `NULL`，无需数据回填；
+- Report 保存时写入范围，`ReviewReportService.get()` 与 Publication 自己的 Report 重建路径都恢复 `ReviewLineRange`；
+- 把 location 纳入 Report 内容摘要：同一 Finding 文本如果位置变化，应视为 Report 内容变化并替换 Finding，而不是错误复用旧摘要；
+- 对不完整的持久化范围采用显式失败，而不是静默丢弃一半数据；正常数据库写入路径由约束保证不会产生这种状态。
+
+#### 修改范围
+
+- `app/models/review_finding.py`：新增两个 nullable 列及成对范围约束；
+- `alembic/versions/20261003_0006_add_review_finding_line_ranges.py`：增加可升级、可回滚的 migration；
+- `app/services/review_report_service.py`：保存、恢复并摘要化 location；
+- `app/services/review_publication_service.py`：Publication 加载 Report 时恢复 location；
+- `app/domain/review/report.py`：集中处理 nullable 数据库字段到领域行范围的转换；
+- Repository 与 Publication 单元测试覆盖 round trip、摘要变化、数据库约束和恢复路径。
+
+#### 自动化验证证据
+
+本批使用 SQLite 内存数据库验证 ORM 与 Check Constraint，使用 Alembic MySQL 离线模式验证 revision 链、升级 DDL 和回滚 DDL，没有连接真实数据库：
+
+```text
+Targeted persistence/publication/pipeline tests: 27 passed
+All tests: 335 passed, 2 third-party deprecation warnings
+Alembic heads: 20261003_0006 (head)
+Alembic offline upgrade SQL: passed
+Alembic offline downgrade SQL: passed
+Ruff: passed
+mypy app evals: passed (101 source files)
+git diff --check: passed
+```
+
+#### 真实集成证据
+
+本批没有对 Docker MySQL 执行 `alembic upgrade head`，没有调用 DeepSeek，也没有向 GitHub 发布 inline comment。因此尚未产生真实 MySQL 列/约束证据、位置经过 Worker 重启后的恢复证据或 GitHub 行级发布证据。此前真实环境的 migration 实测停留在 `20260907_0005`；代码 head `20261003_0006` 需要在本批提交后单独升级和验收。
+
+#### 面试怎么讲
+
+> 行号不是只加到模型 Schema 就完成了。我的 Pipeline 会先持久化 Report，发布失败后也会从 Report 阶段恢复，所以如果位置没有进入数据库，重试时仍会退化成摘要。我在 Finding 表中只增加起止行，不保存完整 Patch；用领域校验和数据库 Check Constraint 保证两个字段成对、为正且顺序正确，并把位置纳入内容摘要。这样 Report 断点恢复后仍保留同一组安全行号，同时避免把源码 Patch 扩散到持久层。
+
+#### 准确边界与尚未完成
+
+- Migration 已通过 MySQL 离线 DDL 检查，但尚未在真实 Docker MySQL 上执行；
+- 当前 Publication 虽然能恢复 location，GitHub Provider Protocol 仍然只接受 Summary body，尚未发送 inline comment 参数；
+- Publication 幂等键仍基于 Report marker，下一批需要把 summary 与 comments 作为一个 Review 请求整体发布，并验证超时后的远程对账；
+- 历史 Finding 的行范围为 `NULL`，会继续安全回退到摘要，不会通过 migration 猜测旧位置；
+- 尚未进行 Worker 重启、真实 PR、DeepSeek Prompt v3 的端到端验证。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2845,12 +2900,15 @@ git diff --check: passed
 | Security Prompt v2 与 Finding Identity v4 | 310 | 调用链证据约束、问题/修复双代码证据、跨类别保守仲裁、真实输出回放和不同根因保护 |
 | Security 架构 Holdout v2 | 315 | 四个新案例、冻结 SHA、全历史数据隔离、双角色稳定路由、三模式 Mock 自测和契约负例 |
 | 行级评论基础第一批 | 329 | Unified Diff 行映射、Prompt v3、nullable location、服务端新增行校验、安全降级和严格 Schema 回归 |
+| 行级评论基础第二批 | 335 | Finding 行范围 ORM、数据库约束、Migration、摘要身份、Report 与 Publication 恢复 |
 
 当前最近一次结果：
 
 ```text
-Targeted inline-location tests: 123 passed
-All tests: 329 passed, 2 third-party deprecation warnings
+Targeted persistence/publication/pipeline tests: 27 passed
+All tests: 335 passed, 2 third-party deprecation warnings
+Alembic heads: 20261003_0006 (head)
+Alembic offline upgrade/downgrade SQL: passed
 Ruff: passed
 mypy app evals: passed (101 source files)
 git diff --check: passed
@@ -2860,7 +2918,7 @@ git diff --check: passed
 
 - Docker Compose 四个核心服务正常运行；
 - MySQL/Redis readiness 正常；
-- Alembic 位于最新 migration；
+- 上一次真实 Docker 联调时 Alembic 位于 `20260907_0005`；代码新增的 `20261003_0006` 尚未执行真实升级；
 - Celery Worker 在线；
 - GitHub App 真实 PR 两次评审成功；
 - DeepSeek 真实识别空列表除零问题；
@@ -2892,16 +2950,16 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 增加 Finding 行范围 ORM 字段和 Alembic migration，使合法位置经过 Report 持久化与断点恢复后仍然存在；
-2. 实现 GitHub Summary + Inline Comments 整组幂等发布、发布前 SHA 校验和无法定位时的摘要回退；
-3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
-4. 完成 Prompt v3 最小 DeepSeek 试跑、真实 PR 行级评论联调和最终全量验收，冻结暑期实习版；
-5. 实习版完成后，再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集，不把生产多 Agent 作为当前必做项。
+1. 扩展 GitHub Provider Protocol，实现 Summary + Inline Comments 单个 Review 请求发布、无法定位时的摘要回退和请求级测试；
+2. 将现有 marker 对账扩展到带 inline comments 的整组幂等发布，并保持发布前 Head SHA 校验；
+3. 提交代码后在 Docker MySQL 执行 `20261003_0006`，再完成 Prompt v3 最小 DeepSeek 试跑与真实 PR 行级评论联调；
+4. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
+5. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
 ### 9.2 后续能力
 
 - 自动化回归阈值；
-- 行级 Finding 持久化和 GitHub inline comment 发布；
+- GitHub inline comment 幂等发布；
 - 更大、更接近真实 PR 的评测集；
 - Prompt injection 专项评测；
 - Planner/Reviewer/Validator/Aggregator 多 Agent；

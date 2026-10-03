@@ -17,7 +17,7 @@ from app.domain.review.exceptions import (
     ReviewPublicationConflict,
     ReviewReportNotFound,
 )
-from app.domain.review.report import ReviewFinding, ReviewReport
+from app.domain.review.report import ReviewFinding, ReviewReport, optional_review_line_range
 from app.models.review_publication import ReviewPublicationRecord
 from app.models.review_report import ReviewReportRecord
 from app.providers.github.protocol import GitHubProvider
@@ -287,6 +287,10 @@ def _domain_report(record: ReviewReportRecord) -> ReviewReport:
                 severity=finding.severity,
                 category=finding.category,
                 confidence=float(finding.confidence),
+                location=optional_review_line_range(
+                    finding.start_line,
+                    finding.end_line,
+                ),
             )
             for finding in record.findings
         ),

@@ -15,6 +15,7 @@ from app.domain.review.report import (
     FindingCategory,
     FindingSeverity,
     ReviewFinding,
+    ReviewLineRange,
     ReviewReport,
     ReviewRiskLevel,
     derive_review_risk,
@@ -66,6 +67,7 @@ def _finding(
     title: str,
     severity: FindingSeverity,
     confidence: float = 0.91,
+    location: ReviewLineRange | None = None,
 ) -> ReviewFinding:
     return ReviewFinding(
         title=title,
@@ -75,6 +77,7 @@ def _finding(
         severity=severity,
         category=FindingCategory.CORRECTNESS,
         confidence=confidence,
+        location=location,
     )
 
 
@@ -91,6 +94,7 @@ def _report(
                 "src/first.py",
                 title="Missing empty-input guard",
                 severity=FindingSeverity.HIGH,
+                location=ReviewLineRange(start_line=7, end_line=8),
             ),
             _finding(
                 "src/second.py",
@@ -131,6 +135,10 @@ def test_save_and_load_structured_review_report(session: Session) -> None:
         "src/second.py",
     )
     assert record.findings[0].file_path_hash == hashlib.sha256(b"src/first.py").hexdigest()
+    assert record.findings[0].start_line == 7
+    assert record.findings[0].end_line == 8
+    assert restored is not None
+    assert restored.findings[0].location == ReviewLineRange(start_line=7, end_line=8)
 
 
 def test_saving_identical_report_reuses_record_without_changing_generation_time(
@@ -209,6 +217,27 @@ def test_finding_order_contributes_to_content_digest(session: Session) -> None:
     assert second.content_digest != first_digest
 
 
+def test_finding_location_contributes_to_content_digest(session: Session) -> None:
+    task = _task(session)
+    service = _service(session)
+    report = _report()
+    first = service.save(task.id, report)
+    first_digest = first.content_digest
+    relocated = replace(
+        report.findings[0],
+        location=ReviewLineRange(start_line=9, end_line=9),
+    )
+
+    second = service.save(
+        task.id,
+        replace(report, findings=(relocated, *report.findings[1:])),
+    )
+
+    assert second.content_digest != first_digest
+    assert second.findings[0].start_line == 9
+    assert second.findings[0].end_line == 9
+
+
 def test_save_rolls_back_all_rows_when_commit_fails(session: Session) -> None:
     task = _task(session)
     service = _service(session)
@@ -276,6 +305,45 @@ def test_database_rejects_finding_confidence_outside_range(session: Session) -> 
     assert session.scalar(select(func.count()).select_from(ReviewFindingRecord)) == 2
 
 
+@pytest.mark.parametrize(
+    ("start_line", "end_line"),
+    [
+        (None, 3),
+        (3, None),
+        (0, 1),
+        (5, 4),
+    ],
+)
+def test_database_rejects_invalid_finding_line_range(
+    session: Session,
+    start_line: int | None,
+    end_line: int | None,
+) -> None:
+    task = _task(session)
+    record = _service(session).save(task.id, _report())
+    record.findings.append(
+        ReviewFindingRecord(
+            position=2,
+            file_path="src/invalid.py",
+            file_path_hash=hashlib.sha256(b"src/invalid.py").hexdigest(),
+            title="Invalid line range",
+            explanation="This row bypasses domain validation for a constraint test.",
+            suggestion="Reject it at the database boundary.",
+            severity=FindingSeverity.LOW,
+            category=FindingCategory.CORRECTNESS,
+            confidence=Decimal("0.9000"),
+            start_line=start_line,
+            end_line=end_line,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    assert session.scalar(select(func.count()).select_from(ReviewFindingRecord)) == 2
+
+
 def test_deleting_task_cascades_to_report_and_findings(session: Session) -> None:
     task = _task(session)
     _service(session).save(task.id, _report())
@@ -299,3 +367,4 @@ def test_report_schema_does_not_store_sensitive_model_inputs(session: Session) -
     sensitive_columns = {"prompt", "raw_response", "patch", "api_key"}
     assert report_columns.isdisjoint(sensitive_columns)
     assert finding_columns.isdisjoint(sensitive_columns)
+    assert {"start_line", "end_line"}.issubset(finding_columns)
