@@ -2661,6 +2661,66 @@ Mock 输出仍然只证明数据加载、路由、Runner、Aggregator 和 Metric
 - 数据集现在已经进入仓库开发流程，后续不能根据真实输出静默修改；若发现 Fixture 或标签问题，必须保留 v2 并创建新版本；
 - 下一步只应先提交冻结分片，再由用户显式运行三次付费 DeepSeek 评测。本批不能提前给出多 Agent 是否改进的结论。
 
+### 6.17 Security Architecture Holdout v2 真实对照与生产架构收口
+
+#### 要解决的问题
+
+Holdout v1 显示 Multi-Agent 没有超过 General，但 v1 随后参与了 Security Prompt v2 和 Finding Identity v4 的开发，不能继续充当未见验证集。已经冻结的 v2 必须完成 General、Security Specialist 和 Planned Multi-Agent 三种架构的真实对照，才能判断前一轮结论是否能在新案例上复现，并决定是否值得进入生产多 Agent 持久化与恢复阶段。
+
+#### 设计选择
+
+- 三次运行使用同一个 `architecture-security-holdout-v2`、Dataset SHA、DeepSeek 模型、Matcher 和 Git commit；
+- 工件全部绑定干净提交 `3541ae8c8e0ad5ea41b93d27da1fb0354a6ae270`，`git_dirty=false`；
+- General 使用 `review-v2`，Security Specialist 使用 `review-security-v2`，Planned Multi-Agent 使用 `multi-agent-v2` 与 `finding-text-v4`；
+- 三份工件均为不可覆盖的本地实验工件，不登记为模型 baseline，也不提交到 Git；
+- 比较阶段只读取本地 JSON，不加载应用 Settings，不访问网络、数据库、GitHub 或 LLM；
+- 按预先约定的标准判断是否上线，而不是在看到结果后修改数据集、标签、Prompt 或 Matcher。
+
+#### 真实集成证据
+
+三种模式均完成 4/4 成功调用，无 Transport、Provider 或 Schema Error，Negative 均保持 0 Finding：
+
+| 架构 | Recall | Precision | F1 | False Positive | Severity Match | Case Pass | Total Tokens | 平均延迟 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| General | 1.0 | 1.0 | 1.0 | 0 | 0.75 | 0.75 | 6,695 | 3.29 秒 |
+| Security Specialist | 0.75 | 1.0 | 0.8571 | 0 | 0.6667 | 0.75 | 8,041 | 3.95 秒 |
+| Planned Multi-Agent | 1.0 | 1.0 | 1.0 | 0 | 0.75 | 0.75 | 17,281 | 10.08 秒 |
+
+逐案例对照显示：
+
+- General 与 Multi-Agent 都发现了混合案例中的未验证 JWT 和分页 off-by-one；
+- Security-only 因职责边界漏掉分页 correctness Finding，因此 Recall 降为 `0.75`；
+- 三种模式都正确识别可预测重置码和 Access Token URL 泄漏，并在高熵重置 Token 负例上保持 0 Finding；
+- 三种模式都把关闭 JWT 签名验证评为 `critical`，而冻结标签为 `high`，因此没有任何架构达到 100% Severity Match 或 100% Case Pass；该标签分歧被保留，没有为了提高分数改写 Expected Severity；
+- Multi-Agent 相对 General 没有增加任何匹配 Finding，也没有减少误报，但增加 10,586 Tokens，平均延迟增加约 6.79 秒；每额外 1000 Token 的新增命中为 `0.0`。
+
+#### 生产决策
+
+v1 与全新 v2 两个冻结 Security 分片都没有证明 Planned Multi-Agent 相对 General 存在净质量收益。v2 中 Multi-Agent 仅恢复了 Security-only 因角色边界漏掉的 Correctness Finding，最终质量与 General 完全相同，却使用约 `2.58x` Token，平均延迟约为 General 的 `3.06x`。
+
+因此本阶段正式收口生产多 Agent 实验：
+
+- 生产 Worker 继续使用单 General Agent；
+- 不进入 Agent Execution ORM、`PARTIAL` 状态、Agent 级恢复、并行调度和 Token Budget 的生产实现；
+- 保留 Planner、专业 Agent、Validator、Aggregator、实验工件和对照框架，作为离线研究与后续更大数据集验证能力；
+- 下一项实习版高价值功能转向 GitHub 行级 Finding 映射和幂等 Inline Comment 发布。
+
+#### 自动化验证证据
+
+本轮没有修改业务代码。离线 Planner 预检确认四个 v2 案例都稳定选择 Correctness 与 Security。定向测试在 Codex Windows 沙箱外启动后有 9 项通过，剩余 1 项因 Pytest 无权访问 `C:\Users\lxr\AppData\Local\Temp\pytest-of-lxr` 而在 `tmp_path` fixture setup 阶段报错；该错误发生在测试逻辑执行前，不是架构比较失败。冻结提交已有的正式自动化证据仍为 315 项测试通过、Ruff 通过、mypy 通过和 `git diff --check` 通过。
+
+#### 面试怎么讲
+
+> 我没有把多 Agent 当作必须上线的卖点，而是先构建可审计的 Planner、专业 Reviewer、去重仲裁和三架构比较框架，再用两个独立冻结的 Security Holdout 做真实 DeepSeek 对照。第二套未见分片中，General 和 Multi-Agent 的 Recall、Precision、F1 完全相同，但 Multi-Agent 多消耗 10,586 Tokens，平均延迟增加约 6.79 秒。因为没有净质量收益，我保留离线实验能力，生产继续采用单 General Agent，把复杂度预算投入行级评论和大 PR 处理。这体现的是基于证据选择架构，而不是为了多 Agent 而多 Agent。
+
+#### 准确边界与尚未完成
+
+- v2 只有四个手工 Security 域案例，结论是“当前证据不支持上线”，不是证明多 Agent 在所有代码评审任务中都无效；
+- 三种模式各只运行一次，延迟会受到网络和服务波动影响；Token 差异比单次延迟更稳定，但仍只代表该数据集；
+- Severity 分歧可能来自模型判断，也可能来自单人标签，不应把 `0.75` Case Pass 简化成模型漏检；
+- Multi-Agent 当前顺序执行，尚未用并发降低墙钟时间；即使并发能改善延迟，也不会消除约 `2.58x` Token 成本和零新增命中的问题；
+- 本轮工件位于被忽略的 `evals/results/`，可能包含模型生成的代码摘录，应按普通评审数据管理，不能提交敏感仓库内容。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2762,6 +2822,7 @@ git diff --check: passed
 - `aggregation-v1` 相邻缺陷案例首次真实运行绑定 commit `2991ae8`：Correctness 发现路径穿越和资源泄漏，Security 也发现路径穿越，两个目标缺陷均命中且标签正确；Identity v2 没有合并路径穿越复述，最终 `3 -> 3`、False Positive=1、Case Pass=false，总计 4643 Tokens、约 13.07 秒。这是 Identity v3 的真实失败输入来源，但 v3 尚未真实重验。
 - Identity v3 真实重验绑定 commit `06cedad`：Correctness 独立发现资源泄漏，Security 独立发现路径穿越，最终 `2 -> 2`、两者 `unique_finding_count=1`、False Positive=0、Case Pass=true，总计 4044 Tokens、约 9.43 秒。此次没有生成重复路径 Finding，因此证明了真实链路和不同根因保留，但不构成新 fallback 的 live 合并证据；fallback 由修复前真实输出回放测试覆盖。运行仍为 dirty-worktree 单案例 partial trial，不是 baseline。
 - Security 三架构正式对照绑定干净提交 `e2d4b2c` 和冻结 Dataset SHA `ef6c5dc7…1873e`：General、Security Specialist、Planned Multi-Agent 均完成 4/4 合法响应且无链路错误。General 为 Recall/Precision/F1=`1.0/1.0/1.0`、0 False Positive、8,381 Tokens、平均 5.64 秒；Security Specialist 为 `0.75/1.0/0.8571`、7,211 Tokens、平均 3.87 秒；Multi-Agent 为 `1.0/0.8/0.8889`、1 False Positive、18,126 Tokens、平均 11.27 秒。本分片没有证明多 Agent 相对 General 的净质量收益，因此生产路径保持 General。
+- Security v2 三架构正式对照绑定干净提交 `3541ae8` 和冻结 Dataset SHA `d786fdda…531b`：三种模式均完成 4/4 合法响应、0 False Positive，且负例保持 0 Finding。General 与 Multi-Agent 的 Recall/Precision/F1 均为 `1.0/1.0/1.0`，但 Multi-Agent 使用 17,281 Tokens，对比 General 的 6,695 Tokens 增加 10,586，平均延迟从约 3.29 秒增加到约 10.08 秒，没有新增匹配 Finding。Security-only 因职责边界漏掉分页 correctness Finding，Recall 为 `0.75`。v1 与 v2 均未证明 Multi-Agent 有净质量收益，因此当前生产架构正式保持单 General Agent。
 
 ---
 
@@ -2769,9 +2830,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交已经冻结的 Security Architecture Holdout v2，在干净工作区分别生成 General、Security v2 和 Planned Multi-Agent v2 三份真实 DeepSeek 工件并离线比较；
-2. 根据 v2 对照决定是否继续 Multi-Agent；若仍未超过 General，则正式收口实验并进入 GitHub 行级评论；若达到质量/成本门槛，再补 Agent Execution 持久化、`PARTIAL` 策略、并发上限和 Token Budget；
-3. Multi-Agent 决策完成后，依次实现行级 Diff 映射与幂等发布、大型 PR 分片与预算控制，最后完成可观测性、README 和演示收尾。
+1. 设计并实现行级 Diff 映射、位置校验、摘要回退和 GitHub Inline Comment 幂等发布；
+2. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
+3. 完成真实 PR 的行级评论联调和最终全量验收，冻结暑期实习版；
+4. 实习版完成后，再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集，不把生产多 Agent 作为当前必做项。
 
 ### 9.2 后续能力
 

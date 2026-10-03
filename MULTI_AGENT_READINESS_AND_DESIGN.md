@@ -1,7 +1,7 @@
 # AgentReview 多 Agent 改造前评审与设计基线
 
-> 状态：首个 Security 架构对照 Holdout 已冻结，尚未执行真实对照或实现生产链路
-> 更新时间：2026-10-01
+> 状态：两套冻结 Security Holdout 的真实三架构对照已完成；当前证据不支持生产多 Agent，生产继续使用单 General Agent
+> 更新时间：2026-10-03
 > 适用范围：从当前单 Agent 系统演进到可恢复、可评测的多 Agent 系统
 
 ## 1. 文档目的
@@ -665,3 +665,26 @@ v3 真实重验绑定 commit `06cedad` 和相同 Dataset SHA：Correctness 只�
 数据集 SHA 为 `ef6c5dc7a804b4c89a4b051c664006d7145943f99b6ae25d526db7d95b41873e`。冻结测试还保证新 Case ID、Head SHA 和 Patch 与现有 Seed、Holdout v1/v2、Aggregation 数据不重叠。默认 Mock 三模式全部通过且 Usage 为 null，只构成评测管道自动化证据。当前全量自动化结果为 306 项测试通过，Ruff 通过，mypy 对本批检查的 101 个源码/测试文件通过。
 
 本批没有运行真实 DeepSeek。提交后需要在干净 worktree 上生成三份不可覆盖工件，再用离线比较器输出质量、错误、Token、延迟、逐案例变化和 Agent 贡献。第一次 live 结果无论好坏都应保留；若发现 Fixture 缺陷，应创建 v2 而不是重写 v1。
+
+## 22. Security Holdout v2 复验与架构决策
+
+Holdout v1 参与 Security Prompt v2 和 Finding Identity v4 开发后，项目保留 v1 作为回归数据，并在任何新模型输出出现前冻结 `architecture-security-holdout-v2`。v2 使用四个全新案例覆盖未验证 JWT 与分页边界的混合缺陷、可预测密码重置码、Access Token URL 泄漏和高熵重置 Token 负例，Dataset SHA 为 `d786fddace3bd5a58f75700fe1182edca97768f281bb6ab16014bc45c7ff531b`。
+
+三份真实 DeepSeek 工件全部绑定干净提交 `3541ae8c8e0ad5ea41b93d27da1fb0354a6ae270`，Provider、Model、Dataset、Matcher 和 Case IDs 一致，4/4 调用成功，无 Transport、Provider 或 Schema Error：
+
+| 架构 | Recall | Precision | F1 | False Positive | Total Tokens | 平均延迟 |
+|---|---:|---:|---:|---:|---:|---:|
+| General | 1.0 | 1.0 | 1.0 | 0 | 6,695 | 3.29 秒 |
+| Security Specialist | 0.75 | 1.0 | 0.8571 | 0 | 8,041 | 3.95 秒 |
+| Planned Multi-Agent | 1.0 | 1.0 | 1.0 | 0 | 17,281 | 10.08 秒 |
+
+Security-only 漏掉混合案例中的分页 correctness Finding，说明专业角色不能替代 General。Multi-Agent 恢复了该 Finding，但最终质量与 General 完全相同；相对 General 没有新增匹配 Finding 或减少误报，却增加 10,586 Tokens 和约 6.79 秒平均延迟，每额外 1000 Token 的新增命中为 0。三种模式都把未验证 JWT 评为 `critical`，而冻结标签为 `high`，该 Severity 分歧被原样保留。
+
+两个独立冻结分片都没有证明 Multi-Agent 相对 General 存在净质量收益，因此当前决策是：
+
+- 生产继续运行单 General Agent；
+- Planner、专业 Agent、Validator、Aggregator 和比较框架保留为 Eval-only；
+- 暂不实现 Agent Execution 持久化、`PARTIAL` 恢复、并发上限和生产 Token Budget；
+- 下一阶段转向 GitHub 行级 Finding 与幂等 Inline Comment，这是暑期实习版本更直接的用户价值。
+
+这个结论只适用于当前模型、Prompt 和小型 Security 分片。它不是“多 Agent 永远无效”的证明，而是当前证据不足以支付约 `2.58x` Token 和 `3.06x` 平均延迟成本。
