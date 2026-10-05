@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from app.domain.review.entities import PullRequestReviewComment
 from app.domain.review.enums import FileChangeStatus
 from app.providers.github import GitHubApiClient, GitHubProvider
 from app.providers.github.auth import GitHubAppAuth, InstallationToken
@@ -302,6 +303,71 @@ def test_create_pull_request_review_posts_comment_for_explicit_commit() -> None:
     assert review.id == 9001
     assert review.state == "COMMENTED"
     assert review.commit_sha == "abcdef123456"
+
+
+def test_create_pull_request_review_posts_single_and_multi_line_comments() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "body": "Automated review",
+            "event": "COMMENT",
+            "commit_id": "abcdef123456",
+            "comments": [
+                {
+                    "path": "src/one.py",
+                    "body": "Single-line finding",
+                    "line": 7,
+                    "side": "RIGHT",
+                },
+                {
+                    "path": "src/two.py",
+                    "body": "Multi-line finding",
+                    "line": 14,
+                    "side": "RIGHT",
+                    "start_line": 12,
+                    "start_side": "RIGHT",
+                },
+            ],
+        }
+        return httpx.Response(200, json=_review_response(), request=request)
+
+    client, _ = _client(handler)
+
+    client.create_pull_request_review(
+        installation_id=42,
+        repository="owner/repository",
+        pull_request_number=7,
+        commit_sha="abcdef123456",
+        body="Automated review",
+        comments=(
+            PullRequestReviewComment(
+                path="src/one.py",
+                body="Single-line finding",
+                line=7,
+            ),
+            PullRequestReviewComment(
+                path="src/two.py",
+                body="Multi-line finding",
+                start_line=12,
+                line=14,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        {"path": "", "body": "Finding", "line": 1},
+        {"path": "src/a.py", "body": "", "line": 1},
+        {"path": "src/a.py", "body": "Finding", "line": 0},
+        {"path": "src/a.py", "body": "Finding", "start_line": 5, "line": 5},
+    ],
+)
+def test_pull_request_review_comment_rejects_invalid_payload(
+    comment: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        PullRequestReviewComment(**comment)  # type: ignore[arg-type]
 
 
 def test_list_pull_request_reviews_parses_review_bodies() -> None:

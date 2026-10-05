@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from uuid import UUID
@@ -6,9 +7,13 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.domain.review.entities import PullRequestReview, PullRequestSnapshot
+from app.domain.review.entities import (
+    PullRequestReview,
+    PullRequestReviewComment,
+    PullRequestSnapshot,
+)
 from app.domain.review.enums import ReviewPublicationProvider, ReviewPublicationStatus, ReviewStatus
-from app.domain.review.exceptions import PullRequestHeadChanged
+from app.domain.review.exceptions import PullRequestBaseChanged, PullRequestHeadChanged
 from app.domain.review.report import (
     FindingCategory,
     FindingSeverity,
@@ -50,11 +55,19 @@ def session() -> Iterator[Session]:
 
 
 class FakeGitHubProvider:
-    def __init__(self, session: Session, *, head_sha: str = HEAD_SHA) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        base_sha: str = "123456abcdef",
+        head_sha: str = HEAD_SHA,
+    ) -> None:
         self._session = session
+        self.base_sha = base_sha
         self.head_sha = head_sha
         self.reviews: tuple[PullRequestReview, ...] = ()
         self.created_bodies: list[str] = []
+        self.created_comments: list[tuple[PullRequestReviewComment, ...]] = []
         self.get_calls = 0
         self.list_calls = 0
         self.create_calls = 0
@@ -75,7 +88,7 @@ class FakeGitHubProvider:
             number=pull_request_number,
             title="Publish a review",
             body=None,
-            base_sha="123456abcdef",
+            base_sha=self.base_sha,
             head_sha=self.head_sha,
             draft=False,
             author_login="octocat",
@@ -105,12 +118,14 @@ class FakeGitHubProvider:
         pull_request_number: int,
         commit_sha: str,
         body: str,
+        comments: tuple[PullRequestReviewComment, ...] = (),
     ) -> PullRequestReview:
         self._assert_request(installation_id, repository, pull_request_number)
         assert commit_sha == HEAD_SHA
         assert not self._session.in_transaction()
         self.create_calls += 1
         self.created_bodies.append(body)
+        self.created_comments.append(comments)
         if self.create_error is not None:
             raise self.create_error
         return PullRequestReview(
@@ -173,6 +188,38 @@ def _task_with_report(
     return task, record.content_digest
 
 
+def _report_with_mixed_locations() -> ReviewReport:
+    inline_finding = ReviewFinding(
+        title="Missing empty-input guard",
+        explanation="An empty list causes division by zero.",
+        suggestion="Reject empty input before dividing.",
+        file_path="src/statistics.py",
+        severity=FindingSeverity.MEDIUM,
+        category=FindingCategory.CORRECTNESS,
+        confidence=0.95,
+        location=ReviewLineRange(start_line=12, end_line=13),
+    )
+    summary_finding = ReviewFinding(
+        title="Cross-file invariant can be violated",
+        explanation="The issue cannot be attached to one added line.",
+        suggestion="Validate the invariant at the service boundary.",
+        file_path="src/service.py",
+        severity=FindingSeverity.MEDIUM,
+        category=FindingCategory.CORRECTNESS,
+        confidence=0.9,
+    )
+    findings = (inline_finding, summary_finding)
+    return ReviewReport(
+        summary="Two correctness problems were found.",
+        risk_level=derive_review_risk(findings),
+        findings=findings,
+        model_name="mock-review-model",
+        prompt_version="review-v3",
+        reviewed_file_count=2,
+        skipped_file_count=0,
+    )
+
+
 def _service(
     session: Session,
     github: FakeGitHubProvider,
@@ -197,6 +244,7 @@ def test_publish_creates_summary_review_and_persists_receipt(session: Session) -
     assert review.id == 9001
     assert github.get_calls == github.list_calls == github.create_calls == 1
     assert review_marker(task.id, report_digest) in github.created_bodies[0]
+    assert github.created_comments == [()]
     publication = session.scalar(select(ReviewPublicationRecord))
     assert publication is not None
     assert publication.provider == ReviewPublicationProvider.GITHUB
@@ -207,26 +255,7 @@ def test_publish_creates_summary_review_and_persists_receipt(session: Session) -
 
 
 def test_publish_restores_persisted_finding_location(session: Session) -> None:
-    finding = ReviewFinding(
-        title="Missing empty-input guard",
-        explanation="An empty list causes division by zero.",
-        suggestion="Reject empty input before dividing.",
-        file_path="src/statistics.py",
-        severity=FindingSeverity.MEDIUM,
-        category=FindingCategory.CORRECTNESS,
-        confidence=0.95,
-        location=ReviewLineRange(start_line=12, end_line=13),
-    )
-    report = ReviewReport(
-        summary="One correctness problem was found.",
-        risk_level=derive_review_risk((finding,)),
-        findings=(finding,),
-        model_name="mock-review-model",
-        prompt_version="review-v3",
-        reviewed_file_count=1,
-        skipped_file_count=0,
-    )
-    task, _ = _task_with_report(session, report)
+    task, _ = _task_with_report(session, _report_with_mixed_locations())
     github = FakeGitHubProvider(session)
     formatter = CapturingFormatter()
 
@@ -237,6 +266,17 @@ def test_publish_restores_persisted_finding_location(session: Session) -> None:
         start_line=12,
         end_line=13,
     )
+    assert len(github.created_comments) == 1
+    assert github.created_comments[0][0].path == "src/statistics.py"
+    assert github.created_comments[0][0].start_line == 12
+    assert github.created_comments[0][0].line == 13
+    assert "Missing empty-input guard" in github.created_comments[0][0].body
+    assert "Missing empty-input guard" in github.created_bodies[0]
+    assert "Cross-file invariant can be violated" in github.created_bodies[0]
+    publication = session.scalar(select(ReviewPublicationRecord))
+    assert publication is not None
+    summary_only_digest = hashlib.sha256(github.created_bodies[0].encode("utf-8")).hexdigest()
+    assert publication.body_digest != summary_only_digest
 
 
 def test_repeated_publish_returns_stored_receipt_without_github_call(session: Session) -> None:
@@ -252,7 +292,7 @@ def test_repeated_publish_returns_stored_receipt_without_github_call(session: Se
 
 
 def test_publish_reconciles_review_created_before_database_commit(session: Session) -> None:
-    task, report_digest = _task_with_report(session)
+    task, report_digest = _task_with_report(session, _report_with_mixed_locations())
     github = FakeGitHubProvider(session)
     marker = review_marker(task.id, report_digest)
     github.reviews = (
@@ -285,6 +325,20 @@ def test_publish_marks_task_stale_when_head_changed_during_analysis(session: Ses
     session.refresh(task)
     assert task.status == ReviewStatus.STALE
     assert task.error_code == "pull_request_head_changed_before_publication"
+    assert github.list_calls == github.create_calls == 0
+    assert session.scalar(select(ReviewPublicationRecord)) is None
+
+
+def test_publish_marks_task_stale_when_base_changed_during_analysis(session: Session) -> None:
+    task, _ = _task_with_report(session)
+    github = FakeGitHubProvider(session, base_sha="newer-base-sha")
+
+    with pytest.raises(PullRequestBaseChanged):
+        _service(session, github).publish(task.id)
+
+    session.refresh(task)
+    assert task.status == ReviewStatus.STALE
+    assert task.error_code == "pull_request_base_changed_before_publication"
     assert github.list_calls == github.create_calls == 0
     assert session.scalar(select(ReviewPublicationRecord)) is None
 

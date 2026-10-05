@@ -69,6 +69,25 @@ class ReviewMarkdownFormatter:
         available = self._max_characters - len(truncation) - len(suffix)
         return content[:available].rstrip() + truncation + suffix
 
+    def format_inline_comment(self, finding: ReviewFinding) -> str:
+        icon = _SEVERITY_ICON[finding.severity]
+        return "\n".join(
+            [
+                f"### {icon} [{finding.severity.value.upper()}] {_safe_inline(finding.title)}",
+                "",
+                (
+                    f"**Category:** `{finding.category.value}` · "
+                    f"**Confidence:** {finding.confidence:.0%}"
+                ),
+                "",
+                _safe_text(finding.explanation),
+                "",
+                "**Suggested change**",
+                "",
+                _safe_text(finding.suggestion),
+            ]
+        )
+
 
 def review_marker(task_id: UUID, report_digest: str) -> str:
     if len(report_digest) != 64 or any(

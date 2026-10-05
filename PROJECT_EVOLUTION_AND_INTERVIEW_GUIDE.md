@@ -40,7 +40,7 @@ cc5c769 docs: add phase one implementation interview guide
 - PR Diff 获取与文件过滤；
 - Mock/OpenAI Provider 抽象；
 - 结构化 Review Report 持久化；
-- GitHub Summary Review 发布；
+- GitHub Summary Review 发布；代码已支持在同一 Review 请求中携带安全行级 comments，尚待真实 PR 验收；
 - Celery Worker、重试策略和阶段级恢复；
 - MySQL、Redis、API、Worker 的 Docker Compose 环境；
 - 144 项自动化测试。
@@ -2177,7 +2177,7 @@ case pass: true
 
 ## 4. 当前能力快照
 
-截至 2026-10-03，系统已经具备：
+截至 2026-10-05，系统已经具备：
 
 ### 4.1 主链路
 
@@ -2837,6 +2837,67 @@ git diff --check: passed
 - 历史 Finding 的行范围为 `NULL`，会继续安全回退到摘要，不会通过 migration 猜测旧位置；
 - 尚未进行 Worker 重启、真实 PR、DeepSeek Prompt v3 的端到端验证。
 
+### 6.20 行级评论基础第三批：GitHub Summary 与 Inline Comments 整组发布
+
+#### 要解决的问题
+
+Finding 的安全行范围已经能够经过数据库和断点恢复保留下来，但 GitHub Provider 仍然只发送 Summary body。如果逐条调用独立评论接口，一次评审会变成多个远程副作用：中途失败时难以判断哪些评论已经创建，也会扩大重复发布和限流风险。本批需要把 Summary、所有合法 inline comments、commit SHA 和幂等 marker 放进一个 Pull Request Review 请求，同时保证没有 location 的 Finding 仍然可见。
+
+#### 设计选择
+
+- 依据 GitHub Create Review 官方协议，在一次 `POST /pulls/{number}/reviews` 中同时发送 `body`、`event=COMMENT`、`commit_id` 和 `comments`；
+- 单行评论使用 `line + side=RIGHT`，多行评论把末行放在 `line`，并增加 `start_line + start_side=RIGHT`；系统只生成第一批已经验证为新增行的 RIGHT-side 范围；
+- 新增 Provider 无关的 `PullRequestReviewComment` 值对象，集中校验 path、body、正行号和多行范围顺序；
+- Summary 继续包含全部 Finding，有位置的 Finding 同时生成 inline comment。这样历史 `NULL` location、跨文件问题和无法精确定位的问题仍有摘要兜底；代价是已定位 Finding 在 Summary 和行级评论中都会出现一次；
+- Inline body 复用现有 Markdown 转义策略，防止模型文本触发 `@mention`、HTML 或 Markdown 结构注入；
+- marker 仍放在 Review Summary 中。Create Review 是一个携带 comments 数组的整组请求，客户端超时后可通过已有 Review marker 对账，避免再次创建整组 Review；
+- Publication 的 `body_digest` 现在对 Summary 与 comments 的规范化完整 payload 计算，而不只计算 Summary；数据库字段名保持兼容，不做额外 migration；
+- 发布前除 Head SHA 外也检查 Base SHA。因为行号来自特定 base/head Diff，即使 Head 未变，Base 变化也可能使位置失效；任一 SHA 变化都将任务标记为 stale，且不会调用创建 Review 接口。
+
+GitHub 协议依据：[Create a review for a pull request](https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request)。
+
+#### 修改范围
+
+- `app/domain/review/entities.py`：新增行级评论请求值对象；
+- `app/domain/review/exceptions.py`：新增 Base SHA 变化异常；
+- `app/providers/github/protocol.py`、`client.py`：支持可选 comments，并转换单行/多行 RIGHT-side JSON；
+- `app/services/review_markdown_formatter.py`：增加安全的 inline Finding 格式；
+- `app/services/review_publication_service.py`：构建整组 payload、完整摘要兜底、payload digest、marker 对账和 base/head 双 SHA 门禁；
+- GitHub Client、Protocol、Formatter、Publication 与 Pipeline 测试同步扩展。
+
+#### 自动化验证证据
+
+本批全部使用 Mock HTTP、Fake GitHub Provider 和 SQLite 内存数据库，没有访问 GitHub、DeepSeek 或真实 MySQL：
+
+```text
+Targeted GitHub/formatter/publication/pipeline tests: 40 passed
+All tests: 342 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (101 source files)
+git diff --check: passed
+```
+
+自动化覆盖：无 comments 时保持旧请求；单行与多行 JSON 字段；非法评论值对象；Markdown 转义；混合有/无 location Findings；持久化位置恢复；Pipeline 从 Prompt v3 location 到 GitHub comment；重复本地 publish；远端 marker 对账；Head 和 Base 变化时阻止发布；可恢复 GitHub 错误仍记录失败状态。
+
+#### 真实集成证据
+
+本批没有在 Docker MySQL 执行 `20261003_0006`，没有调用真实 DeepSeek，也没有向真实 GitHub PR 发送 `comments` 数组。因此“真实 PR 行级评论成功”“GitHub 接受多行范围”“重启后位置恢复”和“远端超时对账包含 inline comments”仍未获得真实证据，暂时不能写进简历完成项。
+
+#### 面试怎么讲
+
+> 我没有为每个 Finding 单独调用 GitHub 评论接口，而是使用 Create Review 的 comments 数组，把 Summary 和所有行级评论放进一个 Review 请求。这样现有 Summary marker 可以代表整个远程副作用；如果客户端超时但 GitHub 实际成功，重试先列出 Review 找 marker，再回填本地 Publication，不重复发送整组评论。无精确位置的 Finding 仍保留在完整 Summary 中，位置只是增强，不会让问题消失。
+
+> 行号绑定的是特定 Diff，所以发布前只检查 Head SHA 还不够。我同时保存并检查 Base SHA；任何一侧变化都把任务标记 stale，不发布可能错位的评论。模型负责提出问题，本地 Diff 校验和双 SHA 门禁负责确保评论位置可信。
+
+#### 准确边界与尚未完成
+
+- 当前只有自动化测试证据，必须先升级真实 MySQL 到 `20261003_0006`，再用真实 PR 验证单行、多行和摘要回退；
+- Summary 为了可读性与故障兜底仍列出全部 Finding，因此定位成功的 Finding 会在 Summary 和 inline 各出现一次；后续可根据真实使用体验改成摘要索引；
+- 远端对账依赖 Summary marker，并基于 Create Review 整组请求成功的语义；当前不会额外拉取每条远端 review comment 做逐条内容校验；
+- 两个 Worker 极端并发地对同一 PENDING Publication 执行外部调用时，仍可能同时完成 list-before-create；任务防重和通常的单任务消费降低概率，但尚未实现数据库 lease 或分布式发布锁；
+- GitHub 可能因行已过期、权限、请求体限制或二级限流返回 422/403，仍需真实故障日志验证错误分类与恢复行为；
+- Prompt v3 尚未做真实 DeepSeek 回归，模型是否稳定返回 location 仍未知。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -2901,12 +2962,13 @@ git diff --check: passed
 | Security 架构 Holdout v2 | 315 | 四个新案例、冻结 SHA、全历史数据隔离、双角色稳定路由、三模式 Mock 自测和契约负例 |
 | 行级评论基础第一批 | 329 | Unified Diff 行映射、Prompt v3、nullable location、服务端新增行校验、安全降级和严格 Schema 回归 |
 | 行级评论基础第二批 | 335 | Finding 行范围 ORM、数据库约束、Migration、摘要身份、Report 与 Publication 恢复 |
+| 行级评论基础第三批 | 342 | GitHub comments 请求、单/多行 RIGHT-side 映射、完整摘要回退、payload digest 与 base/head 双 SHA 门禁 |
 
 当前最近一次结果：
 
 ```text
-Targeted persistence/publication/pipeline tests: 27 passed
-All tests: 335 passed, 2 third-party deprecation warnings
+Targeted GitHub/formatter/publication/pipeline tests: 40 passed
+All tests: 342 passed, 2 third-party deprecation warnings
 Alembic heads: 20261003_0006 (head)
 Alembic offline upgrade/downgrade SQL: passed
 Ruff: passed
@@ -2950,16 +3012,16 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 扩展 GitHub Provider Protocol，实现 Summary + Inline Comments 单个 Review 请求发布、无法定位时的摘要回退和请求级测试；
-2. 将现有 marker 对账扩展到带 inline comments 的整组幂等发布，并保持发布前 Head SHA 校验；
-3. 提交代码后在 Docker MySQL 执行 `20261003_0006`，再完成 Prompt v3 最小 DeepSeek 试跑与真实 PR 行级评论联调；
+1. 提交本批代码，在 Docker MySQL 执行并只读核验 `20261003_0006` 的版本、列和 Check Constraint；
+2. 在专用测试 PR 上完成 Prompt v3 最小 DeepSeek 试跑，依次验证单行 inline、多行 inline、无位置摘要回退和同一 delivery/任务不重复发布；
+3. 根据真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
 4. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
 5. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
 ### 9.2 后续能力
 
 - 自动化回归阈值；
-- GitHub inline comment 幂等发布；
+- GitHub inline comment 真实联调与并发发布锁；
 - 更大、更接近真实 PR 的评测集；
 - Prompt injection 专项评测；
 - Planner/Reviewer/Validator/Aggregator 多 Agent；

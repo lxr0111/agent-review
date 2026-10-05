@@ -80,6 +80,18 @@ def test_formatter_truncates_content_but_preserves_marker() -> None:
     assert body.endswith(review_marker(TASK_ID, REPORT_DIGEST))
 
 
+def test_inline_formatter_sanitizes_untrusted_finding_text() -> None:
+    body = ReviewMarkdownFormatter().format_inline_comment(
+        _finding("Critical [risk]", FindingSeverity.CRITICAL)
+    )
+
+    assert "[CRITICAL]" in body
+    assert "Critical \\[risk\\]" in body
+    assert "@\u200bmaintainer" in body
+    assert "&lt;script&gt;" in body
+    assert "Suggested change" in body
+
+
 def test_marker_rejects_non_sha256_digest() -> None:
     with pytest.raises(ValueError, match="SHA-256"):
         review_marker(TASK_ID, "not-a-digest")

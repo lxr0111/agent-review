@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,10 +9,11 @@ from uuid import UUID
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import ReviewTaskNotFound
-from app.domain.review.entities import PullRequestReview
+from app.domain.review.entities import PullRequestReview, PullRequestReviewComment
 from app.domain.review.enums import ReviewPublicationProvider, ReviewPublicationStatus
 from app.domain.review.exceptions import (
     MissingGitHubInstallation,
+    PullRequestBaseChanged,
     PullRequestHeadChanged,
     PullRequestIdentityMismatch,
     ReviewPublicationConflict,
@@ -37,6 +39,7 @@ class _PublicationInput:
     repository: str
     pull_request_number: int
     installation_id: int
+    base_sha: str | None
     head_sha: str
 
 
@@ -94,14 +97,33 @@ class ReviewPublicationService:
                 str(head_error),
             )
             raise head_error
+        if (
+            publication_input.base_sha is not None
+            and pull_request.base_sha != publication_input.base_sha
+        ):
+            base_error = PullRequestBaseChanged(
+                publication_input.base_sha,
+                pull_request.base_sha,
+            )
+            self._review_service.mark_stale(
+                task_id,
+                "pull_request_base_changed_before_publication",
+                str(base_error),
+            )
+            raise base_error
 
         body = self._formatter.format(
             publication_input.report,
             task_id=task_id,
             report_digest=publication_input.report_digest,
         )
+        comments = tuple(
+            _inline_comment(finding, self._formatter)
+            for finding in publication_input.report.findings
+            if finding.location is not None
+        )
         marker = review_marker(task_id, publication_input.report_digest)
-        body_digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        body_digest = _publication_payload_digest(body, comments)
         prepared = self._prepare(publication_input, body_digest)
         if prepared is not None:
             return prepared
@@ -127,6 +149,7 @@ class ReviewPublicationService:
                 pull_request_number=publication_input.pull_request_number,
                 commit_sha=publication_input.head_sha,
                 body=body,
+                comments=comments,
             )
             if review.commit_sha != publication_input.head_sha:
                 raise ReviewPublicationConflict("GitHub review was attached to a different commit")
@@ -165,6 +188,7 @@ class ReviewPublicationService:
                 repository=task.repository,
                 pull_request_number=task.pull_request_number,
                 installation_id=task.installation_id,
+                base_sha=task.base_sha,
                 head_sha=task.head_sha,
             )
             self._review_tasks.commit()
@@ -320,3 +344,42 @@ def _published_review(
 def _error_code(error: Exception) -> str:
     name = type(error).__name__.replace("GitHub", "Github")
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()[:100]
+
+
+def _inline_comment(
+    finding: ReviewFinding,
+    formatter: ReviewMarkdownFormatter,
+) -> PullRequestReviewComment:
+    if finding.location is None:
+        raise ValueError("Inline review comments require a finding location")
+    start_line = (
+        finding.location.start_line
+        if finding.location.start_line != finding.location.end_line
+        else None
+    )
+    return PullRequestReviewComment(
+        path=finding.file_path,
+        body=formatter.format_inline_comment(finding),
+        line=finding.location.end_line,
+        start_line=start_line,
+    )
+
+
+def _publication_payload_digest(
+    body: str,
+    comments: tuple[PullRequestReviewComment, ...],
+) -> str:
+    payload = {
+        "body": body,
+        "comments": [
+            {
+                "path": comment.path,
+                "body": comment.body,
+                "line": comment.line,
+                "start_line": comment.start_line,
+            }
+            for comment in comments
+        ],
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

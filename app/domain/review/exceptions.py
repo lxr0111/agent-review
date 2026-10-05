@@ -17,6 +17,13 @@ class PullRequestHeadChanged(ReviewContextError):
         self.actual_head_sha = actual_head_sha
 
 
+class PullRequestBaseChanged(ReviewContextError):
+    def __init__(self, expected_base_sha: str, actual_base_sha: str) -> None:
+        super().__init__(f"Pull request base changed from {expected_base_sha} to {actual_base_sha}")
+        self.expected_base_sha = expected_base_sha
+        self.actual_base_sha = actual_base_sha
+
+
 class DuplicateChangedFilePath(ReviewContextError):
     pass
 

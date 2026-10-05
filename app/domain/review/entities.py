@@ -63,3 +63,21 @@ class PullRequestReview:
     state: str
     body: str | None
     html_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestReviewComment:
+    path: str
+    body: str
+    line: int
+    start_line: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ValueError("Pull request review comment path must not be empty")
+        if not self.body.strip():
+            raise ValueError("Pull request review comment body must not be empty")
+        if self.line < 1:
+            raise ValueError("Pull request review comment line must be positive")
+        if self.start_line is not None and not 1 <= self.start_line < self.line:
+            raise ValueError("Pull request review comment start line must precede the end line")

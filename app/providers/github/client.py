@@ -8,7 +8,12 @@ import httpx
 from pydantic import TypeAdapter, ValidationError
 
 from app.core.config import Settings
-from app.domain.review.entities import ChangedFile, PullRequestReview, PullRequestSnapshot
+from app.domain.review.entities import (
+    ChangedFile,
+    PullRequestReview,
+    PullRequestReviewComment,
+    PullRequestSnapshot,
+)
 from app.domain.review.enums import FileChangeStatus
 from app.providers.github.auth import GitHubAppAuth
 from app.providers.github.exceptions import (
@@ -189,6 +194,7 @@ class GitHubApiClient:
         pull_request_number: int,
         commit_sha: str,
         body: str,
+        comments: tuple[PullRequestReviewComment, ...] = (),
     ) -> PullRequestReview:
         repository_path = _repository_path(repository)
         _validate_pull_request_number(pull_request_number)
@@ -197,12 +203,20 @@ class GitHubApiClient:
         if not body.strip():
             raise GitHubPayloadError("GitHub review body must not be empty")
 
+        request_body: dict[str, object] = {
+            "body": body,
+            "event": "COMMENT",
+            "commit_id": commit_sha,
+        }
+        if comments:
+            request_body["comments"] = [_review_comment_payload(comment) for comment in comments]
+
         response = self._authenticated_request(
             "POST",
             f"/repos/{repository_path}/pulls/{pull_request_number}/reviews",
             installation_id=installation_id,
             expected_status=200,
-            json_body={"body": body, "event": "COMMENT", "commit_id": commit_sha},
+            json_body=request_body,
         )
         return self._parse_review(response)
 
@@ -353,3 +367,16 @@ def _review_from_payload(payload: GitHubPullRequestReviewResponse) -> PullReques
         body=payload.body,
         html_url=payload.html_url,
     )
+
+
+def _review_comment_payload(comment: PullRequestReviewComment) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "path": comment.path,
+        "body": comment.body,
+        "line": comment.line,
+        "side": "RIGHT",
+    }
+    if comment.start_line is not None:
+        payload["start_line"] = comment.start_line
+        payload["start_side"] = "RIGHT"
+    return payload

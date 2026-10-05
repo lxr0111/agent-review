@@ -4,7 +4,12 @@ import pytest
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.domain.review.entities import ChangedFile, PullRequestReview, PullRequestSnapshot
+from app.domain.review.entities import (
+    ChangedFile,
+    PullRequestReview,
+    PullRequestReviewComment,
+    PullRequestSnapshot,
+)
 from app.domain.review.enums import FileChangeStatus, ReviewPublicationStatus, ReviewStatus
 from app.domain.review.report import FindingCategory, FindingSeverity, ReviewReport, ReviewRiskLevel
 from app.models import Base
@@ -15,7 +20,7 @@ from app.models.review_task import ReviewTask
 from app.providers.github.exceptions import GitHubTransientError
 from app.providers.llm.mock import MockLLMProvider
 from app.providers.llm.protocol import LLMReviewResult, LLMTokenUsage, ReviewPrompt
-from app.providers.llm.schemas import LLMReviewFinding, LLMReviewOutput
+from app.providers.llm.schemas import LLMReviewFinding, LLMReviewLocation, LLMReviewOutput
 from app.repositories.review_file_repository import ReviewFileRepository
 from app.repositories.review_publication_repository import ReviewPublicationRepository
 from app.repositories.review_report_repository import ReviewReportRepository
@@ -57,6 +62,7 @@ class FakeGitHubProvider:
         self.review_list_calls = 0
         self.review_create_calls = 0
         self.review_create_errors: list[Exception] = []
+        self.created_comments: list[tuple[PullRequestReviewComment, ...]] = []
 
     def get_pull_request(
         self,
@@ -120,11 +126,13 @@ class FakeGitHubProvider:
         pull_request_number: int,
         commit_sha: str,
         body: str,
+        comments: tuple[PullRequestReviewComment, ...] = (),
     ) -> PullRequestReview:
         self._assert_request(installation_id, repository, pull_request_number)
         assert not self._session.in_transaction()
         assert commit_sha == HEAD_SHA
         self.review_create_calls += 1
+        self.created_comments.append(comments)
         if self.review_create_errors:
             raise self.review_create_errors.pop(0)
         return PullRequestReview(
@@ -175,6 +183,7 @@ def _llm_output() -> LLMReviewOutput:
                 severity=FindingSeverity.HIGH,
                 category=FindingCategory.SECURITY,
                 confidence=0.95,
+                location=LLMReviewLocation(start_line=1, end_line=1),
             ),
         ),
     )
@@ -237,6 +246,9 @@ def test_pipeline_runs_context_ai_persistence_and_publication(session: Session) 
     assert github.get_calls == 2
     assert github.file_calls == 1
     assert github.review_create_calls == 1
+    assert len(github.created_comments[0]) == 1
+    assert github.created_comments[0][0].path == "src/auth.py"
+    assert github.created_comments[0][0].line == 1
     assert session.scalar(select(func.count()).select_from(ReviewFile)) == 1
     assert session.scalar(select(func.count()).select_from(ReviewReportRecord)) == 1
     publication = session.scalar(select(ReviewPublicationRecord))

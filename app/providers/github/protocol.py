@@ -1,6 +1,11 @@
 from typing import Protocol, runtime_checkable
 
-from app.domain.review.entities import ChangedFile, PullRequestReview, PullRequestSnapshot
+from app.domain.review.entities import (
+    ChangedFile,
+    PullRequestReview,
+    PullRequestReviewComment,
+    PullRequestSnapshot,
+)
 
 
 @runtime_checkable
@@ -37,4 +42,5 @@ class GitHubProvider(Protocol):
         pull_request_number: int,
         commit_sha: str,
         body: str,
+        comments: tuple[PullRequestReviewComment, ...] = (),
     ) -> PullRequestReview: ...

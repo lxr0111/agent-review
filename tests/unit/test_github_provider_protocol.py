@@ -1,4 +1,9 @@
-from app.domain.review.entities import ChangedFile, PullRequestReview, PullRequestSnapshot
+from app.domain.review.entities import (
+    ChangedFile,
+    PullRequestReview,
+    PullRequestReviewComment,
+    PullRequestSnapshot,
+)
 from app.providers.github import GitHubProvider
 
 
@@ -47,7 +52,9 @@ class FakeGitHubProvider:
         pull_request_number: int,
         commit_sha: str,
         body: str,
+        comments: tuple[PullRequestReviewComment, ...] = (),
     ) -> PullRequestReview:
+        del comments
         return PullRequestReview(
             id=1,
             commit_sha=commit_sha,
