@@ -2881,7 +2881,19 @@ git diff --check: passed
 
 #### 真实集成证据
 
-本批没有在 Docker MySQL 执行 `20261003_0006`，没有调用真实 DeepSeek，也没有向真实 GitHub PR 发送 `comments` 数组。因此“真实 PR 行级评论成功”“GitHub 接受多行范围”“重启后位置恢复”和“远端超时对账包含 inline comments”仍未获得真实证据，暂时不能写进简历完成项。
+2026-10-05 已在本地 Docker Compose 环境重建 API/Worker，并由 API 启动流程对持久化 MySQL volume 执行 `alembic upgrade head`。只读验收结果如下：
+
+```text
+Docker Compose: mysql/redis/api healthy, worker running
+API /health/ready: database=ok, redis=ok
+Celery inspect ping: 1 node online, pong
+Alembic current: 20261003_0006 (head)
+review_findings.start_line: INT NULL
+review_findings.end_line: INT NULL
+ck_review_finding_line_range_valid: present and matches the migration rule
+```
+
+这证明 migration 能在项目的真实 Docker MySQL 上执行，容器重建后 API、Redis、MySQL 和 Worker 仍能正常启动。此次验收没有触发 Webhook、没有调用 DeepSeek，也没有向真实 GitHub PR 发送 `comments` 数组，因此“真实 PR 行级评论成功”“GitHub 接受多行范围”和“远端超时对账包含 inline comments”仍未获得真实证据，暂时不能写进简历完成项。
 
 #### 面试怎么讲
 
@@ -2891,7 +2903,7 @@ git diff --check: passed
 
 #### 准确边界与尚未完成
 
-- 当前只有自动化测试证据，必须先升级真实 MySQL 到 `20261003_0006`，再用真实 PR 验证单行、多行和摘要回退；
+- Docker MySQL migration、列和 Check Constraint 已真实验收；仍需用真实 PR 验证单行、多行和摘要回退；
 - Summary 为了可读性与故障兜底仍列出全部 Finding，因此定位成功的 Finding 会在 Summary 和 inline 各出现一次；后续可根据真实使用体验改成摘要索引；
 - 远端对账依赖 Summary marker，并基于 Create Review 整组请求成功的语义；当前不会额外拉取每条远端 review comment 做逐条内容校验；
 - 两个 Worker 极端并发地对同一 PENDING Publication 执行外部调用时，仍可能同时完成 list-before-create；任务防重和通常的单任务消费降低概率，但尚未实现数据库 lease 或分布式发布锁；
@@ -2980,7 +2992,7 @@ git diff --check: passed
 
 - Docker Compose 四个核心服务正常运行；
 - MySQL/Redis readiness 正常；
-- 上一次真实 Docker 联调时 Alembic 位于 `20260907_0005`；代码新增的 `20261003_0006` 尚未执行真实升级；
+- 2026-10-05 已重建 API/Worker，并在持久化 Docker MySQL 上升级到 `20261003_0006 (head)`；只读确认 `start_line/end_line` 为 nullable INT，行范围 Check Constraint 存在；
 - Celery Worker 在线；
 - GitHub App 真实 PR 两次评审成功；
 - DeepSeek 真实识别空列表除零问题；
@@ -3012,11 +3024,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交本批代码，在 Docker MySQL 执行并只读核验 `20261003_0006` 的版本、列和 Check Constraint；
-2. 在专用测试 PR 上完成 Prompt v3 最小 DeepSeek 试跑，依次验证单行 inline、多行 inline、无位置摘要回退和同一 delivery/任务不重复发布；
-3. 根据真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
-4. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
-5. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
+1. 在专用测试 PR 上完成 Prompt v3 最小 DeepSeek 试跑，依次验证单行 inline、多行 inline、无位置摘要回退和同一 delivery/任务不重复发布；
+2. 根据真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
+3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
+4. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
 ### 9.2 后续能力
 
