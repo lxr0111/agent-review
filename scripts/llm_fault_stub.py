@@ -14,7 +14,10 @@ from typing import Any
 
 RETRYABLE_SCENARIOS = frozenset({"timeout", "rate_limit", "server_error"})
 PERMANENT_SCENARIOS = frozenset({"unauthorized", "forbidden", "invalid_schema"})
-SUPPORTED_SCENARIOS = frozenset({"success", *RETRYABLE_SCENARIOS, *PERMANENT_SCENARIOS})
+SUCCESS_SCENARIOS = frozenset({"success", "finding_without_location"})
+SUPPORTED_SCENARIOS = frozenset(
+    {*SUCCESS_SCENARIOS, *RETRYABLE_SCENARIOS, *PERMANENT_SCENARIOS}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +98,8 @@ class FaultController:
                 self._scenario in RETRYABLE_SCENARIOS
                 and self._request_count > self._failures_before_success
             )
-            action = "success" if self._scenario == "success" or should_recover else self._scenario
-            if action == "success":
+            action = "success" if should_recover else self._scenario
+            if action in SUCCESS_SCENARIOS:
                 self._success_count += 1
             else:
                 self._failure_count += 1
@@ -211,6 +214,37 @@ class FaultStubHandler(BaseHTTPRequestHandler):
             return
         if decision.action == "invalid_schema":
             self._send_json(HTTPStatus.OK, _response_payload('{"summary":"missing findings"}'))
+            return
+        if decision.action == "finding_without_location":
+            self._send_json(
+                HTTPStatus.OK,
+                _response_payload(
+                    json.dumps(
+                        {
+                            "summary": "A deterministic finding has no safe inline location.",
+                            "findings": [
+                                {
+                                    "title": "Deterministic summary-only finding",
+                                    "explanation": (
+                                        "This test-only finding verifies that review content remains "
+                                        "visible when no validated line range is available."
+                                    ),
+                                    "suggestion": (
+                                        "Keep the finding in the review summary without creating an "
+                                        "inline comment."
+                                    ),
+                                    "file_path": "demo.py",
+                                    "severity": "medium",
+                                    "category": "correctness",
+                                    "confidence": 0.95,
+                                    "location": None,
+                                }
+                            ],
+                        },
+                        separators=(",", ":"),
+                    )
+                ),
+            )
             return
         self._send_json(
             HTTPStatus.OK,

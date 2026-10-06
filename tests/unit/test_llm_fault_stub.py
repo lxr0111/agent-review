@@ -5,7 +5,10 @@ from threading import Thread
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
+from app.providers.llm.deepseek import DeepSeekResponsesProvider
+from app.providers.llm.protocol import ReviewPrompt
 from scripts.llm_fault_stub import FaultController, FaultStubHandler
 
 
@@ -104,3 +107,34 @@ def test_http_stub_configures_fault_and_recovers() -> None:
     assert second.status_code == 200
     assert second.json()["status"] == "completed"
     assert state.json()["request_count"] == 2
+
+
+def test_finding_without_location_is_a_schema_valid_success() -> None:
+    controller = FaultController(scenario="finding_without_location")
+    prompt = ReviewPrompt(
+        system="Review the supplied pull request.",
+        user='{"reviewable_files":[]}',
+        version="review-v3",
+    )
+
+    with _fault_server(controller) as base_url, httpx.Client(base_url=base_url) as client:
+        provider = DeepSeekResponsesProvider(
+            client=client,
+            api_key=SecretStr("fault-injection-not-a-real-key"),
+            model="fault-injection-model",
+            max_output_tokens=2_048,
+        )
+        result = provider.generate_review(prompt)
+
+    assert result.output.summary == "A deterministic finding has no safe inline location."
+    assert len(result.output.findings) == 1
+    finding = result.output.findings[0]
+    assert finding.title == "Deterministic summary-only finding"
+    assert finding.file_path == "demo.py"
+    assert finding.location is None
+    assert result.usage is None
+
+    snapshot = controller.snapshot()
+    assert snapshot.request_count == 1
+    assert snapshot.failure_count == 0
+    assert snapshot.success_count == 1

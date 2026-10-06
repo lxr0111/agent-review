@@ -2984,6 +2984,50 @@ Celery total task time: about 7.62 seconds
 - GitHub 的远端评论查询返回 Diff `position`，当前 `line/start_line` 字段为空；页面和 commit 绑定证明评论附着于本次 Diff，但范围展示细节仍以 GitHub UI 为准；
 - 两个 Python 正例不能代表 Prompt v3 的整体位置准确率，后续仍需增加多语言、删除/上下文行和复杂 Patch 样例。
 
+### 6.22 Summary 回退验收准备：可控的无位置 Finding Stub
+
+#### 要解决的问题
+
+真实 Summary 回退验收需要一个“Finding 合法，但 `location=null`”的确定性模型响应。生产 `MockLLMProvider` 默认返回 0 个 Finding，已有 Fault Stub 的成功场景也只返回空 Findings；如果依赖 DeepSeek 随机省略位置，测试既可能反复产生费用，也无法稳定复现。因此需要扩展测试专用 Responses API Stub，同时保持正式 DeepSeek/OpenAI Provider 和生产 Pipeline 不变。
+
+#### 设计选择
+
+- 新增 `finding_without_location` Stub 场景，返回 HTTP 200 和完全符合当前 `LLMReviewOutput` 的结构化响应；
+- 响应固定包含 1 个 `demo.py` Finding，标题、解释、建议、类别、严重程度和置信度完整，但显式返回 `location: null`；
+- 将该场景与普通 `success` 一起计入成功计数，而不是故障计数，便于后续真实验收核对 Stub 请求次数；
+- 测试直接使用 `DeepSeekResponsesProvider` 访问本地 Stub，覆盖真实 Responses API Envelope、结构化文本解析和 Pydantic Schema，而不为生产 Provider 增加测试分支；
+- 复用现有 AI Review 与 Publication 回归，确认无位置 Finding 保留在 Report，同时 GitHub comments 参数为空。
+
+#### 修改范围与行为
+
+- `scripts/llm_fault_stub.py`：增加成功场景集合与 `finding_without_location` 响应；
+- `tests/unit/test_llm_fault_stub.py`：通过真实 Provider 解析路径断言 Finding 内容完整、`location is None`、usage 缺失保持 `None`，并核验请求被计为一次成功；
+- 正式 Provider、数据库模型、migration、Webhook 和 GitHub 发布代码均未修改。
+
+#### 自动化验证证据
+
+```text
+Targeted fault stub + AI review + publication tests: 29 passed
+All tests: 343 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals scripts/llm_fault_stub.py: passed (102 source files)
+git diff --check: passed
+```
+
+#### 真实集成证据
+
+本批尚未启动 Fault Compose Worker，也没有创建新的 GitHub PR、调用 DeepSeek 或发布 GitHub Review。因此它只证明测试基础设施和既有降级逻辑可组合，不证明真实 GitHub Summary-only 验收已经完成。
+
+#### 面试怎么讲
+
+> 无位置回退不能靠等待真实模型偶然返回空 location。我给测试专用 Responses API Stub 增加一个 Schema 合法的无位置 Finding，用生产 DeepSeek Provider 的解析路径读取它，再复用真实 Pipeline 和 GitHub Publisher 做后续联调。这样测试可重复、不会产生模型费用，也没有在生产 Provider 中加入故障注入分支。
+
+#### 准确边界与尚未完成
+
+- Stub 返回的是确定性测试数据，不是模型质量证据；
+- 下一步必须通过真实 Webhook、Celery、MySQL 和 GitHub Create Review 验证 Summary 中保留 Finding、远端 inline comment 数量为 0；
+- 验收结束后必须停止 Fault Stub，并恢复真实 DeepSeek Worker，避免后续 PR 误用测试 Provider。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -3051,16 +3095,17 @@ Celery total task time: about 7.62 seconds
 | 行级评论基础第一批 | 329 | Unified Diff 行映射、Prompt v3、nullable location、服务端新增行校验、安全降级和严格 Schema 回归 |
 | 行级评论基础第二批 | 335 | Finding 行范围 ORM、数据库约束、Migration、摘要身份、Report 与 Publication 恢复 |
 | 行级评论基础第三批 | 342 | GitHub comments 请求、单/多行 RIGHT-side 映射、完整摘要回退、payload digest 与 base/head 双 SHA 门禁 |
+| Summary 回退可控 Stub | 343 | Schema 合法的无位置 Finding、Responses API 真实解析路径、成功计数与既有降级回归 |
 
 当前最近一次结果：
 
 ```text
-Targeted GitHub/formatter/publication/pipeline tests: 40 passed
-All tests: 342 passed, 2 third-party deprecation warnings
+Targeted fault stub + AI review + publication tests: 29 passed
+All tests: 343 passed, 2 third-party deprecation warnings
 Alembic heads: 20261003_0006 (head)
 Alembic offline upgrade/downgrade SQL: passed
 Ruff: passed
-mypy app evals: passed (101 source files)
+mypy app evals scripts/llm_fault_stub.py: passed (102 source files)
 git diff --check: passed
 ```
 
