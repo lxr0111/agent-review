@@ -2893,7 +2893,7 @@ review_findings.end_line: INT NULL
 ck_review_finding_line_range_valid: present and matches the migration rule
 ```
 
-这证明 migration 能在项目的真实 Docker MySQL 上执行，容器重建后 API、Redis、MySQL 和 Worker 仍能正常启动。此次验收没有触发 Webhook、没有调用 DeepSeek，也没有向真实 GitHub PR 发送 `comments` 数组，因此“真实 PR 行级评论成功”“GitHub 接受多行范围”和“远端超时对账包含 inline comments”仍未获得真实证据，暂时不能写进简历完成项。
+这证明 migration 能在项目的真实 Docker MySQL 上执行，容器重建后 API、Redis、MySQL 和 Worker 仍能正常启动。2026-10-06 又在专用测试 PR 上完成 Prompt v3 与多行范围 inline comment 的真实端到端联调，详细证据见下一节。
 
 #### 面试怎么讲
 
@@ -2903,12 +2903,69 @@ ck_review_finding_line_range_valid: present and matches the migration rule
 
 #### 准确边界与尚未完成
 
-- Docker MySQL migration、列和 Check Constraint 已真实验收；仍需用真实 PR 验证单行、多行和摘要回退；
+- Docker MySQL migration、列和 Check Constraint 已真实验收，真实 PR 多行范围 inline comment 也已通过；仍需验证严格单行定位和无位置摘要回退；
 - Summary 为了可读性与故障兜底仍列出全部 Finding，因此定位成功的 Finding 会在 Summary 和 inline 各出现一次；后续可根据真实使用体验改成摘要索引；
 - 远端对账依赖 Summary marker，并基于 Create Review 整组请求成功的语义；当前不会额外拉取每条远端 review comment 做逐条内容校验；
 - 两个 Worker 极端并发地对同一 PENDING Publication 执行外部调用时，仍可能同时完成 list-before-create；任务防重和通常的单任务消费降低概率，但尚未实现数据库 lease 或分布式发布锁；
 - GitHub 可能因行已过期、权限、请求体限制或二级限流返回 422/403，仍需真实故障日志验证错误分类与恢复行为；
-- Prompt v3 尚未做真实 DeepSeek 回归，模型是否稳定返回 location 仍未知。
+- Prompt v3 已有一次真实 DeepSeek 正例，但单案例不足以证明 location 在不同语言、Patch 形态和缺陷类型下都稳定。
+
+### 6.21 Prompt v3 与 GitHub 多行 Inline Comment 真实验收
+
+#### 要解决的问题
+
+行级评论此前只有 Mock HTTP、Fake Provider 和 SQLite 自动化证据。真实链路还需要回答三个问题：DeepSeek 是否会按 Prompt v3 返回可校验的位置；位置能否经过 Report 持久化与 Publication 恢复保持不丢失；GitHub 是否接受同一个 Create Review 请求中的 Summary 与多行 `comments`。
+
+#### 验收设计与行为
+
+- 在专用测试仓库的 `demo.py` 中加入 `calculate_average(values)`，故意保留空列表除零问题；
+- 通过真实 `pull_request.synchronize` Webhook 触发 FastAPI、Celery、GitHub App、DeepSeek Responses API 和 GitHub Create Review；
+- 继续使用生产路径的单 General Agent，没有切换测试专用 Provider，也没有绕过 Diff 行号校验；
+- 模型返回 `demo.py:7-9`，整个范围均为当前 Patch 的新增行，因此本地校验接受该候选位置；
+- Publication 在一次 GitHub Review 请求中同时发布完整 Summary 与一条 inline comment，没有逐条创建远程副作用。
+
+本轮没有修改生产代码；它验证的是前述三批行级评论实现能够在真实外部系统中按设计运行。
+
+#### 自动化验证证据
+
+本轮没有新增或重新运行自动化测试。对应代码提交前已有以下隔离验证，不能与本次真实集成证据混为一谈：
+
+```text
+Targeted GitHub/formatter/publication/pipeline tests: 40 passed
+All tests: 342 passed, 2 third-party deprecation warnings
+Ruff: passed
+mypy app evals: passed (101 source files)
+```
+
+#### 真实集成证据
+
+2026-10-06 的真实链路结果：
+
+```text
+Webhook: pull_request.synchronize -> API 202
+GitHub installation token: 201
+GitHub PR and files: 200
+DeepSeek Responses API: 200
+GitHub Create Review: 200
+Pipeline outcome: completed
+Celery total task time: about 9.05 seconds
+```
+
+数据库只读核验显示：Review Task 为 `COMPLETED`、`attempt_count=1`、无错误码；Report 使用 `deepseek-flash` 与 `review-v3`，评审 1 个文件、跳过 0 个文件，只生成 1 个 Finding；Finding 为 `MEDIUM/CORRECTNESS`，文件 `demo.py`，持久化范围为 `7-9`；Publication 为 `PUBLISHED/COMMENTED`、`attempt_count=1`、无错误码。相同 `repository + PR number + head SHA` 只有 1 个 Task，对应 Report 和 Publication 也各只有 1 条。
+
+远端只读核验确认该 GitHub Review 下只有 1 条 review comment，路径为 `demo.py`，绑定的 commit 与本次 PR Head 一致，GitHub 返回的 Diff `position=9`。GitHub 页面同时显示 AgentReview Summary；`View reviewed changes` 可进入对应代码评论。该结果证明多行范围评论真实发布成功，但不等于严格单行评论已经验证。
+
+#### 面试怎么讲
+
+> 我没有把自动化测试通过直接当作 GitHub 行级评论已经可用，而是用专用 PR 做真实验收。DeepSeek 在 Prompt v3 下返回文件和 `7-9` 行范围，本地先确认整个范围都属于当前 Diff 新增行，再把位置持久化到 Report，最后通过一个 Create Review 请求同时发布 Summary 和 inline comment。Worker 日志、MySQL 记录和 GitHub 远端评论三处证据一致，且 Task、Report、Publication 均保持唯一。
+
+#### 准确边界与尚未完成
+
+- 本次模型选择 `7-9` 多行范围，尚未得到只锚定单个缺陷行的真实单行样例；
+- 尚未在真实 PR 上验证 location 为 `NULL` 或被本地校验拒绝时只发布 Summary 的降级路径；
+- 本轮没有专门执行 GitHub delivery Redeliver，因此不能用本次结果新增一条幂等结论；此前 Webhook Redelivery 证据仍然有效；
+- GitHub 的远端评论查询返回 Diff `position`，当前 `line/start_line` 字段为空；页面和 commit 绑定证明评论附着于本次 Diff，但范围展示细节仍以 GitHub UI 为准；
+- 单个 Python 正例不能代表 Prompt v3 的位置准确率，后续仍需增加多语言、删除/上下文行和复杂 Patch 样例。
 
 ---
 
@@ -2993,6 +3050,7 @@ git diff --check: passed
 - Docker Compose 四个核心服务正常运行；
 - MySQL/Redis readiness 正常；
 - 2026-10-05 已重建 API/Worker，并在持久化 Docker MySQL 上升级到 `20261003_0006 (head)`；只读确认 `start_line/end_line` 为 nullable INT，行范围 Check Constraint 存在；
+- 2026-10-06 在专用测试 PR 上完成 Prompt v3 + DeepSeek + GitHub 多行范围 inline comment 真实联调：模型位置 `demo.py:7-9` 经过本地校验和 MySQL 持久化，Create Review 返回 200，远端确认 1 条 review comment，Task/Report/Publication 各保持 1 条；
 - Celery Worker 在线；
 - GitHub App 真实 PR 两次评审成功；
 - DeepSeek 真实识别空列表除零问题；
@@ -3024,8 +3082,8 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 在专用测试 PR 上完成 Prompt v3 最小 DeepSeek 试跑，依次验证单行 inline、多行 inline、无位置摘要回退和同一 delivery/任务不重复发布；
-2. 根据真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
+1. 在专用测试 PR 上补齐严格单行 inline、无位置摘要回退和同一 delivery 重投不重复发布；
+2. 根据剩余真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
 3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
 4. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
