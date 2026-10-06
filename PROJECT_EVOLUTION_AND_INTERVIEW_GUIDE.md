@@ -2910,11 +2910,11 @@ ck_review_finding_line_range_valid: present and matches the migration rule
 - GitHub 可能因行已过期、权限、请求体限制或二级限流返回 422/403，仍需真实故障日志验证错误分类与恢复行为；
 - Prompt v3 已有一次真实 DeepSeek 正例，但单案例不足以证明 location 在不同语言、Patch 形态和缺陷类型下都稳定。
 
-### 6.21 Prompt v3 与 GitHub 多行 Inline Comment 真实验收
+### 6.21 Prompt v3 与 GitHub 单行/多行 Inline Comment 真实验收
 
 #### 要解决的问题
 
-行级评论此前只有 Mock HTTP、Fake Provider 和 SQLite 自动化证据。真实链路还需要回答三个问题：DeepSeek 是否会按 Prompt v3 返回可校验的位置；位置能否经过 Report 持久化与 Publication 恢复保持不丢失；GitHub 是否接受同一个 Create Review 请求中的 Summary 与多行 `comments`。
+行级评论此前只有 Mock HTTP、Fake Provider 和 SQLite 自动化证据。真实链路还需要回答四个问题：DeepSeek 是否会按 Prompt v3 返回可校验的位置；位置能否经过 Report 持久化与 Publication 恢复保持不丢失；GitHub 是否接受同一个 Create Review 请求中的 Summary 与单行/多行 `comments`；同一 delivery 重投是否会重复调用模型或发布整组 Review。
 
 #### 验收设计与行为
 
@@ -2922,7 +2922,10 @@ ck_review_finding_line_range_valid: present and matches the migration rule
 - 通过真实 `pull_request.synchronize` Webhook 触发 FastAPI、Celery、GitHub App、DeepSeek Responses API 和 GitHub Create Review；
 - 继续使用生产路径的单 General Agent，没有切换测试专用 Provider，也没有绕过 Diff 行号校验；
 - 模型返回 `demo.py:7-9`，整个范围均为当前 Patch 的新增行，因此本地校验接受该候选位置；
-- Publication 在一次 GitHub Review 请求中同时发布完整 Summary 与一条 inline comment，没有逐条创建远程副作用。
+- Publication 在一次 GitHub Review 请求中同时发布完整 Summary 与一条 inline comment，没有逐条创建远程副作用；
+- 第二个专用 PR 以安全的 `divide` 函数为基线，只把 `if b == 0` 改为 `if b != 0`，使 PR Diff 只有 1 条新增代码行；
+- 第二次模型返回 `demo.py:2-2`，本地验证为严格单行范围并发布一条单行 inline comment；
+- 对第二个 PR 的同一 `pull_request.opened` delivery 再次执行 Redeliver，验证 Webhook 入口、任务、模型和远端发布的全链路防重。
 
 本轮没有修改生产代码；它验证的是前述三批行级评论实现能够在真实外部系统中按设计运行。
 
@@ -2953,19 +2956,33 @@ Celery total task time: about 9.05 seconds
 
 数据库只读核验显示：Review Task 为 `COMPLETED`、`attempt_count=1`、无错误码；Report 使用 `deepseek-flash` 与 `review-v3`，评审 1 个文件、跳过 0 个文件，只生成 1 个 Finding；Finding 为 `MEDIUM/CORRECTNESS`，文件 `demo.py`，持久化范围为 `7-9`；Publication 为 `PUBLISHED/COMMENTED`、`attempt_count=1`、无错误码。相同 `repository + PR number + head SHA` 只有 1 个 Task，对应 Report 和 Publication 也各只有 1 条。
 
-远端只读核验确认该 GitHub Review 下只有 1 条 review comment，路径为 `demo.py`，绑定的 commit 与本次 PR Head 一致，GitHub 返回的 Diff `position=9`。GitHub 页面同时显示 AgentReview Summary；`View reviewed changes` 可进入对应代码评论。该结果证明多行范围评论真实发布成功，但不等于严格单行评论已经验证。
+远端只读核验确认该 GitHub Review 下只有 1 条 review comment，路径为 `demo.py`，绑定的 commit 与本次 PR Head 一致，GitHub 返回的 Diff `position=9`。GitHub 页面同时显示 AgentReview Summary；`View reviewed changes` 可进入对应代码评论。该结果证明多行范围评论真实发布成功。
+
+严格单行 PR 的真实结果：
+
+```text
+Webhook: pull_request.opened -> API 202
+GitHub installation token: 201
+GitHub PR and files: 200
+DeepSeek Responses API: 200
+GitHub Create Review: 200
+Pipeline outcome: completed
+Celery total task time: about 7.62 seconds
+```
+
+数据库只读核验显示：Review Task 为 `COMPLETED`、`attempt_count=1`、无错误码；Report 使用 `deepseek-flash` 与 `review-v3`，评审 1 个文件、跳过 0 个文件，只生成 1 个 Finding；Finding 为 `HIGH/CORRECTNESS`，标题为 `Inverted zero-check in divide()`，置信度 99%，文件 `demo.py`，持久化范围严格为 `start_line=2/end_line=2`；Publication 为 `PUBLISHED/COMMENTED`、`attempt_count=1`。远端只读核验确认 Review 和 inline comment 各只有 1 条，评论绑定当前 PR Head，GitHub 返回 Diff `position=3`。
+
+对同一 `pull_request.opened` delivery 执行 Redeliver 后，API 仍正常返回 `202`，但 Worker 没有收到新的 `reviews.run`，日志中没有新的 DeepSeek 请求或 GitHub Create Review。数据库中该 delivery、相同 `repository + PR number + head SHA` 的 Task、Report、Finding 和 Publication 数量均保持 1，Task 与 Publication 的 `attempt_count` 都保持 1；GitHub 远端 Review 和 inline comment 数量也都保持 1。
 
 #### 面试怎么讲
 
-> 我没有把自动化测试通过直接当作 GitHub 行级评论已经可用，而是用专用 PR 做真实验收。DeepSeek 在 Prompt v3 下返回文件和 `7-9` 行范围，本地先确认整个范围都属于当前 Diff 新增行，再把位置持久化到 Report，最后通过一个 Create Review 请求同时发布 Summary 和 inline comment。Worker 日志、MySQL 记录和 GitHub 远端评论三处证据一致，且 Task、Report、Publication 均保持唯一。
+> 我没有把自动化测试通过直接当作 GitHub 行级评论已经可用，而是分别用多行和严格单行 PR 做真实验收。DeepSeek 在 Prompt v3 下返回 `demo.py:7-9` 和 `demo.py:2-2`，本地先确认整个范围都属于当前 Diff 新增行，再把位置持久化到 Report，最后通过一个 Create Review 请求同时发布 Summary 和 inline comment。Worker 日志、MySQL 记录和 GitHub 远端评论三处证据一致；同一 delivery 重投后没有新任务、模型调用或远端 Review，Task、Report 和 Publication 继续保持唯一。
 
 #### 准确边界与尚未完成
 
-- 本次模型选择 `7-9` 多行范围，尚未得到只锚定单个缺陷行的真实单行样例；
 - 尚未在真实 PR 上验证 location 为 `NULL` 或被本地校验拒绝时只发布 Summary 的降级路径；
-- 本轮没有专门执行 GitHub delivery Redeliver，因此不能用本次结果新增一条幂等结论；此前 Webhook Redelivery 证据仍然有效；
 - GitHub 的远端评论查询返回 Diff `position`，当前 `line/start_line` 字段为空；页面和 commit 绑定证明评论附着于本次 Diff，但范围展示细节仍以 GitHub UI 为准；
-- 单个 Python 正例不能代表 Prompt v3 的位置准确率，后续仍需增加多语言、删除/上下文行和复杂 Patch 样例。
+- 两个 Python 正例不能代表 Prompt v3 的整体位置准确率，后续仍需增加多语言、删除/上下文行和复杂 Patch 样例。
 
 ---
 
@@ -2976,6 +2993,8 @@ Celery total task time: about 9.05 seconds
 > 构建基于 FastAPI、Celery、Redis、MySQL、GitHub App 和 DeepSeek Responses API 的事件驱动 PR 自动评审系统，完成 Webhook → Diff → 结构化 AI Review → GitHub Review 的真实端到端联调。
 
 > 通过 Delivery ID、PR Head SHA、数据库唯一约束、Report 断点恢复及 Publication 远程标记对账实现业务幂等；实测 GitHub Webhook Redelivery 不会重复创建任务、调用模型或发布 Review。
+
+> 基于 Unified Diff 构建新增行映射，对模型返回的文件与行范围执行确定性校验，并将合法位置随 Report 持久化；通过单个 GitHub Create Review 请求整组发布 Summary 与 inline comments，真实验证单行、多行定位及含行级评论的 Webhook 重投防重。
 
 > 通过 `ReviewEngine`、`ReviewAgent`、Orchestrator 和透传 Aggregator 将生产 Pipeline 与具体 AI 服务解耦，在保持单次模型调用和既有 Report/Publication 行为不变的前提下，为后续专业 Agent 扩展建立可测试边界。
 
@@ -2990,7 +3009,7 @@ Celery total task time: about 9.05 seconds
 暂时不要写入简历的内容：
 
 - “多 Agent 已实现”；
-- “行级评论已实现”；
+- “所有语言和复杂 Diff 都能准确定位行级评论”；
 - 把 10 个种子案例的指标泛化为生产环境整体模型质量；
 - “生产级高并发”；
 - “LLM Exactly Once”；
@@ -3051,8 +3070,9 @@ git diff --check: passed
 - MySQL/Redis readiness 正常；
 - 2026-10-05 已重建 API/Worker，并在持久化 Docker MySQL 上升级到 `20261003_0006 (head)`；只读确认 `start_line/end_line` 为 nullable INT，行范围 Check Constraint 存在；
 - 2026-10-06 在专用测试 PR 上完成 Prompt v3 + DeepSeek + GitHub 多行范围 inline comment 真实联调：模型位置 `demo.py:7-9` 经过本地校验和 MySQL 持久化，Create Review 返回 200，远端确认 1 条 review comment，Task/Report/Publication 各保持 1 条；
+- 2026-10-06 完成严格单行 inline comment 真实联调：单行 Diff 得到 `demo.py:2-2`，DeepSeek 与 GitHub Create Review 均返回 200，远端 Review/comment 各 1 条；随后重投同一 delivery，没有新 Worker 任务、DeepSeek 调用或 GitHub Review，数据库与远端数量及 attempt count 均保持不变；
 - Celery Worker 在线；
-- GitHub App 真实 PR 两次评审成功；
+- GitHub App 已完成多次真实 PR 评审；
 - DeepSeek 真实识别空列表除零问题；
 - Webhook Redelivery 业务幂等实测通过；
 - 六类故障/恢复场景实测通过；
@@ -3082,7 +3102,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 在专用测试 PR 上补齐严格单行 inline、无位置摘要回退和同一 delivery 重投不重复发布；
+1. 在专用测试 PR 上补齐无合法位置时只发布 Summary 的降级验收；
 2. 根据剩余真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
 3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
 4. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
