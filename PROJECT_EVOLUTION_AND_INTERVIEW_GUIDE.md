@@ -3090,7 +3090,25 @@ final current --check-heads: 20261003_0006 (head)
 temporary validation schema: removed after verification
 ```
 
-以上属于本地 Docker MySQL 集成证据。Workflow 尚未提交到 GitHub，因此不能声称 GitHub Actions 远端运行已经通过；首次远端结果需要在提交后单独验收并补回本文。
+以上属于本地 Docker MySQL 集成证据，不能替代托管 Runner 的真实执行结果。
+
+#### GitHub Actions 托管 Runner 证据
+
+2026-10-07 将提交 `45b597d` 推送到正式项目仓库的 `main` 后，GitHub Actions 自动触发 CI Run #1。页面验收结果如下：
+
+```text
+Trigger: push
+Branch: main
+Commit: 45b597d
+Overall status: Success
+Total duration: 1m 25s
+Tests and static analysis: Success (42s)
+MySQL migration round trip: Success (1m 21s)
+```
+
+因此可以确认同一份已提交代码在 GitHub 托管 Ubuntu Runner 上完成了依赖安装、空白检查、Ruff lint/format、mypy、344 项 pytest，以及 MySQL 8.4 的 `head → base → head` 往返。两个 Job 并行运行，所以总耗时不等于各 Job 耗时相加；这些时长只用于说明首次 CI 可运行，不作为性能基准。
+
+页面另有两条 notice，提示 `ubuntu-latest` 将从 2026-10-19 开始迁移到 Ubuntu 26。它们不是测试失败或代码告警，但说明 Runner 镜像仍是一个外部变化源；最终冻结版本前应决定固定到明确的 Ubuntu 版本，或在迁移后重新验证 `ubuntu-latest`。
 
 #### 面试怎么讲
 
@@ -3098,7 +3116,7 @@ temporary validation schema: removed after verification
 
 #### 准确边界与尚未完成
 
-- 本批已验证 Workflow YAML 和本地等价命令，但尚未获得 GitHub Actions 托管 Runner 的首次运行证据；
+- GitHub Actions 首次 Push 运行已经通过，但单次成功不能证明未来 Runner 镜像或上游依赖变化永远兼容；
 - 项目仍没有完整 lock file；Ruff 已因 formatter 基线而精确固定为 0.16.5，但其他依赖仍会安装约束范围内的可用版本，可复现性弱于全部锁定依赖；
 - CI 的 MySQL migration 往返使用空数据库，不覆盖携带大规模历史数据时的在线 migration 性能和锁等待；
 - 当前 CI 没有覆盖真实 GitHub App 或 DeepSeek，这是一项刻意的安全边界，真实集成仍使用专用测试仓库手动验收。
@@ -3192,7 +3210,8 @@ git diff --check: passed
 - 2026-10-06 在专用测试 PR 上完成 Prompt v3 + DeepSeek + GitHub 多行范围 inline comment 真实联调：模型位置 `demo.py:7-9` 经过本地校验和 MySQL 持久化，Create Review 返回 200，远端确认 1 条 review comment，Task/Report/Publication 各保持 1 条；
 - 2026-10-06 完成严格单行 inline comment 真实联调：单行 Diff 得到 `demo.py:2-2`，DeepSeek 与 GitHub Create Review 均返回 200，远端 Review/comment 各 1 条；随后重投同一 delivery，没有新 Worker 任务、DeepSeek 调用或 GitHub Review，数据库与远端数量及 attempt count 均保持不变；
 - 2026-10-07 完成无位置 Finding 的 Summary-only 受控真实联调：真实 Webhook、Celery、MySQL 和 GitHub Create Review 链路仅将 LLM 上游替换为本地 Stub；数据库保存 1 条 `start_line/end_line=NULL` 的完整 Finding，远端只有 1 条 Summary Review 且 inline comment 为 0，Task/Report/Publication 均唯一且 `attempt_count=1`；验收后 Fault Stub 已停止，Worker 已恢复 `deepseek` / `deepseek-flash` 并通过 Celery ping；
-- 2026-10-07 在独立临时 schema 上完成 MySQL 8.4 migration 往返：首次发现并修复 `20260904_0002` downgrade 提前删除外键支撑索引导致的错误 1553，修复后 `base → head → base → head` 全部通过并回到 `20261003_0006 (head)`；临时 schema 已删除，GitHub Actions 远端首次运行仍待提交后验收；
+- 2026-10-07 在独立临时 schema 上完成 MySQL 8.4 migration 往返：首次发现并修复 `20260904_0002` downgrade 提前删除外键支撑索引导致的错误 1553，修复后 `base → head → base → head` 全部通过并回到 `20261003_0006 (head)`；临时 schema 已删除；
+- 2026-10-07 GitHub Actions CI Run #1 在 `main@45b597d` 上通过：`Tests and static analysis` 用时 42 秒，`MySQL migration round trip` 用时 1 分 21 秒，总状态 Success、总耗时 1 分 25 秒；页面只有两条 Ubuntu Runner 即将迁移的 notice，没有失败或测试告警；
 - Celery Worker 在线；
 - GitHub App 已完成多次真实 PR 评审；
 - DeepSeek 真实识别空列表除零问题；
@@ -3224,8 +3243,8 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 提交并推送 CI 变更，验收 GitHub Actions 的 `quality` 与 `mysql-migrations` 两个 Job，并把远端证据写回本文；
-2. 完成 README 架构图、时序图、脱敏演示截图、快速启动与真实 GitHub App 联调手册；
+1. 完成 README 架构图、时序图、脱敏演示截图、快速启动与真实 GitHub App 联调手册；
+2. 在最终冻结前处理 `ubuntu-latest` 迁移策略，并再次验收 CI；
 3. 执行最终全量测试、Docker 健康检查和敏感文件审计，冻结暑期实习版并打版本标签；
 4. 整理简历表述、项目讲解主线和高频面试追问；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
