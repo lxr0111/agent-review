@@ -3176,6 +3176,78 @@ MySQL migration round trip: Success (1m 21s)
 
 ---
 
+### 6.25 暑期实习版冻结前验收与 CI Runner 固定
+
+#### 要解决的问题
+
+最终冻结前，本地代码质量、Docker 基础设施和敏感文件都需要重新验收。同时，前几次
+GitHub Actions 虽然成功，但 `ubuntu-latest` 页面已经提示将迁移到 Ubuntu 26；如果继续
+使用滚动标签，同一份提交在未来可能因为 Runner 大版本变化得到不同结果。
+
+#### 设计选择
+
+- 将 `quality` 与 `mysql-migrations` 两个 Job 都从 `ubuntu-latest` 固定到 GitHub 当前
+  支持的 `ubuntu-24.04`；
+- 两个 Job 使用同一明确 OS 基线，避免静态检查与 Migration 验证运行在不同代环境；
+- 不固定到仍处于快速演进阶段的新 Runner，也不依赖滚动的 `latest` 标签；
+- 保留 Python 3.12、MySQL 8.4 和现有 Action 版本，不把 Runner 固定与其他依赖升级混在
+  同一提交中；
+- 把本地自动化检查、Docker 实测、敏感文件审计和待完成的远程 CI 明确分开。
+
+#### 修改范围
+
+- `.github/workflows/ci.yml`：两个 Job 的 `runs-on` 改为 `ubuntu-24.04`；
+- 本批不修改应用代码、数据库 Migration、依赖、Prompt、Provider 或测试逻辑。
+
+#### 如何验证
+
+本地冻结前验收已经完成：
+
+```text
+pytest: 344 passed, 3 warnings
+Ruff lint / format: passed
+mypy: passed
+pip check: passed
+git diff --check: passed
+Docker API/MySQL/Redis: healthy
+Readiness: database=ok, redis=ok
+Alembic: 20261003_0006 (head)
+Celery inspect ping: pong, 1 node online
+Git worktree: clean and synchronized with origin/main
+Tracked current/history paths for .env, secrets, PEM and key files: none
+Tracked-content scan for Smee URL, private-key header and GitHub token prefixes: none
+```
+
+其中 pytest 第一次在 Windows 系统临时目录遇到 13 个 `tmp_path` 权限错误。审计确认该
+目录所有者为 Codex Sandbox 账户，而不是项目测试失败；改用当前用户可写的独立
+`--basetemp` 后完整 `344 passed`。这属于本机测试隔离问题，不修改项目逻辑来规避。
+
+远程验收要求：推送后确认两个 Job 都明确运行在 `ubuntu-24.04`，并再次全部通过。远程
+结果产生前，不能把 Runner 固定描述为已验收。
+
+#### 实测结果
+
+- 本地自动化、Docker 健康检查与敏感文件审计均已通过；
+- 最近一次 `ddea229` 的 GitHub Actions 已在旧 `ubuntu-latest` 配置下通过，耗时 59 秒；
+- `ubuntu-24.04` 修改尚待提交和远程 CI，本节不提前记录成功结果。
+
+#### 面试怎么讲
+
+> 在冻结简历版本前，我重新执行了全量测试、类型与格式检查、真实 Docker 健康检查、
+> Migration Head 检查、Celery Ping 和敏感文件审计。GitHub 提示 `ubuntu-latest` 即将
+> 切换大版本后，我没有忽略环境漂移，而是把两个 CI Job 固定到明确的 Ubuntu 24.04，
+> 并要求固定后的工作流重新跑完测试和 MySQL Migration 往返，再创建版本标签。
+
+#### 准确边界与尚未完成
+
+- 固定 OS 大版本不能锁定 Runner 镜像内的所有补丁和预装工具版本；项目依赖也没有完整
+  lock file，因此这是减少环境漂移，而不是实现字节级可复现构建；
+- 三条 pytest warning 需要继续作为第三方兼容性提示观察，但不影响本次 344 项测试通过；
+- 只有新提交的 GitHub Actions 通过后，才能创建 `v1.0.0-internship` 标签；
+- README 脱敏截图仍属于可选的展示增强，不阻塞版本冻结。
+
+---
+
 ## 7. 当前可用于简历的表述
 
 以下表述与现有实现和实测一致：
@@ -3296,10 +3368,10 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 为 README 补充脱敏演示截图，并在 GitHub 页面检查 Mermaid、链接和最新 CI 状态；
-2. 在最终冻结前处理 `ubuntu-latest` 迁移策略，并再次验收 CI；
-3. 执行最终全量测试、Docker 健康检查和敏感文件审计，冻结暑期实习版并打版本标签；
-4. 整理简历表述、项目讲解主线和高频面试追问；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
+1. 提交并推送 `ubuntu-24.04` Runner 固定，确认最新 GitHub Actions 两个 Job 通过；
+2. 在干净提交上创建并推送 `v1.0.0-internship` 标签，冻结暑期实习版本；
+3. 整理简历表述、项目讲解主线和高频面试追问；
+4. 按需补充 README 脱敏截图，或继续选择大型 PR 分片与预算控制、生产可观测性和更大真实评测集。
 
 ### 9.2 后续能力
 

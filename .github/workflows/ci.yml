@@ -21,7 +21,7 @@ env:
 jobs:
   quality:
     name: Tests and static analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -70,7 +70,7 @@ jobs:
 
   mysql-migrations:
     name: MySQL migration round trip
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       DATABASE_URL: mysql+pymysql://agent_review:ci_password@127.0.0.1:3306/agent_review_ci
