@@ -2984,7 +2984,7 @@ Celery total task time: about 7.62 seconds
 - GitHub 的远端评论查询返回 Diff `position`，当前 `line/start_line` 字段为空；页面和 commit 绑定证明评论附着于本次 Diff，但范围展示细节仍以 GitHub UI 为准；
 - 两个 Python 正例不能代表 Prompt v3 的整体位置准确率，后续仍需增加多语言、删除/上下文行和复杂 Patch 样例。
 
-### 6.22 Summary 回退验收准备：可控的无位置 Finding Stub
+### 6.22 Summary 回退：可控的无位置 Finding Stub 与真实 GitHub 验收
 
 #### 要解决的问题
 
@@ -3016,17 +3016,31 @@ git diff --check: passed
 
 #### 真实集成证据
 
-本批尚未启动 Fault Compose Worker，也没有创建新的 GitHub PR、调用 DeepSeek 或发布 GitHub Review。因此它只证明测试基础设施和既有降级逻辑可组合，不证明真实 GitHub Summary-only 验收已经完成。
+2026-10-07 在专用测试仓库的 PR #3 上完成受控真实链路验收。该次运行保留真实 GitHub Webhook、FastAPI、Celery、Redis、MySQL、GitHub App 鉴权和 Create Review 请求，只把 LLM 上游切换为本地 `finding_without_location` Stub，因此没有调用或计费 DeepSeek，也不能把结果解释为模型质量证据。
+
+可核对的结果如下：
+
+- Fault Stub 收到 1 次 Responses API 请求并返回 1 次成功，失败计数为 0；
+- Worker 成功获取 PR 与文件 Diff，调用本地 Stub 返回 HTTP 200，随后 GitHub Create Review 返回 HTTP 200；
+- Pipeline 最终 `completed`，本次 Celery 任务耗时约 4.24 秒；该数字只描述一次受控联调，不作为性能指标；
+- MySQL 中 Review Task 为 `COMPLETED`，`attempt_count=1`，Report、Finding 和 Publication 各只有 1 条；
+- Finding 的文件为 `demo.py`，严重程度为 `MEDIUM`、类别为 `CORRECTNESS`，`start_line/end_line` 均为 `NULL`；
+- Publication 为 `PUBLISHED`，`attempt_count=1`，保存的远端 Review ID 与 GitHub 查询结果一致；
+- GitHub 远端 PR 只有 1 条 `COMMENTED` Review，该 Review 的 inline comment 数量为 0，但 Summary 中仍保留完整 Finding；
+- 验收后已停止 Fault Stub，并用基础 Compose 配置重建 Worker；只读确认恢复为 `deepseek` / `deepseek-flash`，Celery ping 返回 1 个在线节点。
+
+这组证据验证的是“位置缺失时安全降级，但不丢失评审结论”：系统不会构造不合法的 GitHub 行级评论，也不会因为无法定位行号而丢弃 Finding。
 
 #### 面试怎么讲
 
-> 无位置回退不能靠等待真实模型偶然返回空 location。我给测试专用 Responses API Stub 增加一个 Schema 合法的无位置 Finding，用生产 DeepSeek Provider 的解析路径读取它，再复用真实 Pipeline 和 GitHub Publisher 做后续联调。这样测试可重复、不会产生模型费用，也没有在生产 Provider 中加入故障注入分支。
+> 无位置回退不能靠等待真实模型偶然返回空 location。我给测试专用 Responses API Stub 增加了一个 Schema 合法的无位置 Finding，但没有在正式 Provider 中加入测试分支。真实验收时只替换 LLM 上游，其余 Webhook、Celery、MySQL、GitHub App 和 Create Review 都走生产路径。最终数据库保存了完整 Finding，GitHub 只出现一条 Summary Review 且 inline comment 为 0；验收后我又停止 Stub 并恢复了 DeepSeek Worker。这证明系统在位置不可用时能够安全降级，而且测试过程可重复、无模型费用。
 
 #### 准确边界与尚未完成
 
 - Stub 返回的是确定性测试数据，不是模型质量证据；
-- 下一步必须通过真实 Webhook、Celery、MySQL 和 GitHub Create Review 验证 Summary 中保留 Finding、远端 inline comment 数量为 0；
-- 验收结束后必须停止 Fault Stub，并恢复真实 DeepSeek Worker，避免后续 PR 误用测试 Provider。
+- 本次只覆盖 `location=null`，而不是模型返回越界位置、删除行或上下文行等所有拒绝原因；这些路径已有自动化回归，但还没有逐项真实 GitHub 验收；
+- 单个 Python 小 PR 不能证明复杂 Diff、多语言仓库或大规模并发下的降级行为；
+- 约 4.24 秒是一次本地受控集成耗时，不能表述为生产 P50/P95 或吞吐量。
 
 ---
 
@@ -3116,6 +3130,7 @@ git diff --check: passed
 - 2026-10-05 已重建 API/Worker，并在持久化 Docker MySQL 上升级到 `20261003_0006 (head)`；只读确认 `start_line/end_line` 为 nullable INT，行范围 Check Constraint 存在；
 - 2026-10-06 在专用测试 PR 上完成 Prompt v3 + DeepSeek + GitHub 多行范围 inline comment 真实联调：模型位置 `demo.py:7-9` 经过本地校验和 MySQL 持久化，Create Review 返回 200，远端确认 1 条 review comment，Task/Report/Publication 各保持 1 条；
 - 2026-10-06 完成严格单行 inline comment 真实联调：单行 Diff 得到 `demo.py:2-2`，DeepSeek 与 GitHub Create Review 均返回 200，远端 Review/comment 各 1 条；随后重投同一 delivery，没有新 Worker 任务、DeepSeek 调用或 GitHub Review，数据库与远端数量及 attempt count 均保持不变；
+- 2026-10-07 完成无位置 Finding 的 Summary-only 受控真实联调：真实 Webhook、Celery、MySQL 和 GitHub Create Review 链路仅将 LLM 上游替换为本地 Stub；数据库保存 1 条 `start_line/end_line=NULL` 的完整 Finding，远端只有 1 条 Summary Review 且 inline comment 为 0，Task/Report/Publication 均唯一且 `attempt_count=1`；验收后 Fault Stub 已停止，Worker 已恢复 `deepseek` / `deepseek-flash` 并通过 Celery ping；
 - Celery Worker 在线；
 - GitHub App 已完成多次真实 PR 评审；
 - DeepSeek 真实识别空列表除零问题；
@@ -3147,15 +3162,15 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 在专用测试 PR 上补齐无合法位置时只发布 Summary 的降级验收；
-2. 根据剩余真实 GitHub 结果补充必要的错误分类或兼容修复，并把证据写回本文；
-3. 补 GitHub Actions CI，并完成 README 架构图、时序图、脱敏演示截图和最终运行手册；
-4. 完成最终全量验收并冻结暑期实习版；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
+1. 补 GitHub Actions CI，把 pytest、Ruff、mypy 和 migration 检查固化为提交门禁；
+2. 完成 README 架构图、时序图、脱敏演示截图、快速启动与真实 GitHub App 联调手册；
+3. 执行最终全量测试、Docker 健康检查和敏感文件审计，冻结暑期实习版并打版本标签；
+4. 整理简历表述、项目讲解主线和高频面试追问；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。
 
 ### 9.2 后续能力
 
 - 自动化回归阈值；
-- GitHub inline comment 真实联调与并发发布锁；
+- 多语言与复杂 Diff 的 inline comment 扩展验证，以及并发发布锁；
 - 更大、更接近真实 PR 的评测集；
 - Prompt injection 专项评测；
 - Planner/Reviewer/Validator/Aggregator 多 Agent；
