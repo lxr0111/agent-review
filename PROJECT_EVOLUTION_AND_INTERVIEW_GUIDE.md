@@ -3042,6 +3042,67 @@ git diff --check: passed
 - 单个 Python 小 PR 不能证明复杂 Diff、多语言仓库或大规模并发下的降级行为；
 - 约 4.24 秒是一次本地受控集成耗时，不能表述为生产 P50/P95 或吞吐量。
 
+### 6.23 GitHub Actions CI 与 MySQL Migration 往返门禁
+
+#### 要解决的问题
+
+项目已经有 343 项本地自动化测试、多轮真实联调和一个基础 GitHub Actions `quality` Job，但原有 CI 只执行 pytest、Ruff、Ruff format 和 `mypy app`，没有显式最小权限、过期运行取消、完整类型检查范围或真实 MySQL migration 验证。仅验证 `alembic upgrade head` 也不够：它能证明新数据库可以升级，却不能证明历史 migration 能安全回滚。暑期实习版需要补齐这些仓库级约束，而且 CI 默认不得读取本地 `.env`、调用真实 GitHub 或消耗付费模型。
+
+#### 设计选择
+
+- 扩展已有 `.github/workflows/ci.yml`，保留所有 push 和 pull request 触发，并增加手动触发入口；
+- Workflow 只授予 `contents: read`，并通过 concurrency group 取消同一分支或 PR 上已过期的运行；
+- `quality` Job 使用 Python 3.12，安装 `.[dev]` 后执行提交差异空白检查、Ruff lint、Ruff format、完整范围 mypy 和全量 pytest；
+- `mysql-migrations` Job 使用独立的 MySQL 8.4 Service 和临时数据库，执行 `upgrade head → current --check-heads → downgrade base → upgrade head → current --check-heads`；
+- CI 全局固定 `LLM_PROVIDER=mock`，不提供 GitHub App、DeepSeek 或 OpenAI Secret，因此测试不能意外访问或计费真实模型；
+- 两个 Job 相互独立，使代码质量失败和 migration 失败能够在 GitHub 页面上分别定位。
+
+Action 版本基于实现时的 GitHub 官方文档选择 `actions/checkout@v7` 与 `actions/setup-python@v7`；Python 版本显式固定到项目支持的 3.12，pip cache 绑定 `pyproject.toml`。
+
+审计原有 `ruff format --check .` 时发现，历史代码没有保持统一 formatter 基线，当前 Ruff 0.16.5 会判定 21 个 Python 文件需要重新排版。为了不通过删除门禁掩盖问题，本批对这些文件执行一次纯机械格式化，并把 Ruff 开发依赖精确固定为已经验证的 `0.16.5`；格式化后重新运行全量测试和类型检查，确认没有行为回归。后续升级 formatter 时，仍应显式更新版本并把纯格式变化与业务变化拆成独立提交。
+
+#### CI 发现的 Migration 缺陷与修复
+
+首次在独立 MySQL schema 上执行完整往返时，升级到 `20261003_0006 (head)` 成功，但降级 `20260904_0002 → 20260902_0001` 失败：旧 migration 试图先删除 `ix_webhook_events_review_task_id`，而 MySQL 仍使用该索引支撑 `webhook_events.review_task_id` 外键，因此返回错误 1553。
+
+修复保持最小范围：`20260904_0002` 的 downgrade 直接删除 `webhook_events` 表，让 MySQL 在同一个 DDL 操作中移除该表的外键和索引，再继续清理父表 `review_tasks` 的新增字段。新增单元测试锁定操作顺序，避免以后再次把外键支撑索引提前删除。这里修改历史 migration 是必要的，因为新增一个更晚的 revision 无法改变执行到旧 revision 时的 downgrade 函数。
+
+#### 自动化验证证据
+
+```text
+Workflow YAML parse and structure check: passed
+Ruff lint and format: passed
+mypy app evals scripts/llm_fault_stub.py: passed (102 source files)
+All tests: 344 passed, 2 third-party deprecation warnings
+git diff --check: passed
+```
+
+#### 本地 MySQL 集成证据
+
+本地验证使用独立的 `agent_review_ci_validation_20261007` schema，没有修改现有 `agent_review` 业务数据库。修复后的真实 MySQL 8.4 结果为：
+
+```text
+empty database -> upgrade head: passed
+current --check-heads: 20261003_0006 (head)
+downgrade base: passed
+clean re-upgrade head: passed
+final current --check-heads: 20261003_0006 (head)
+temporary validation schema: removed after verification
+```
+
+以上属于本地 Docker MySQL 集成证据。Workflow 尚未提交到 GitHub，因此不能声称 GitHub Actions 远端运行已经通过；首次远端结果需要在提交后单独验收并补回本文。
+
+#### 面试怎么讲
+
+> 我没有只把 pytest 搬进 CI，而是把纯代码质量和真实 MySQL migration 拆成两个独立 Job。Migration Job 每次使用全新 MySQL 8.4 Service，执行完整升级、回滚和重新升级。第一次本地模拟就发现一个历史 downgrade 顺序问题：索引仍被外键依赖时提前删除会触发 MySQL 1553。我让删除表的 DDL 统一清理该表外键和索引，并增加操作顺序回归测试。CI 默认使用 Mock Provider 且没有真实凭据，所以不会因为 PR 测试产生模型费用或 GitHub 副作用。
+
+#### 准确边界与尚未完成
+
+- 本批已验证 Workflow YAML 和本地等价命令，但尚未获得 GitHub Actions 托管 Runner 的首次运行证据；
+- 项目仍没有完整 lock file；Ruff 已因 formatter 基线而精确固定为 0.16.5，但其他依赖仍会安装约束范围内的可用版本，可复现性弱于全部锁定依赖；
+- CI 的 MySQL migration 往返使用空数据库，不覆盖携带大规模历史数据时的在线 migration 性能和锁等待；
+- 当前 CI 没有覆盖真实 GitHub App 或 DeepSeek，这是一项刻意的安全边界，真实集成仍使用专用测试仓库手动验收。
+
 ---
 
 ## 7. 当前可用于简历的表述
@@ -3110,14 +3171,14 @@ git diff --check: passed
 | 行级评论基础第二批 | 335 | Finding 行范围 ORM、数据库约束、Migration、摘要身份、Report 与 Publication 恢复 |
 | 行级评论基础第三批 | 342 | GitHub comments 请求、单/多行 RIGHT-side 映射、完整摘要回退、payload digest 与 base/head 双 SHA 门禁 |
 | Summary 回退可控 Stub | 343 | Schema 合法的无位置 Finding、Responses API 真实解析路径、成功计数与既有降级回归 |
+| GitHub Actions CI 与 Migration 回滚修复 | 344 | pytest/Ruff/mypy 门禁、MySQL 8.4 migration 往返、外键支撑索引回滚顺序回归 |
 
 当前最近一次结果：
 
 ```text
-Targeted fault stub + AI review + publication tests: 29 passed
-All tests: 343 passed, 2 third-party deprecation warnings
+All tests: 344 passed, 2 third-party deprecation warnings
 Alembic heads: 20261003_0006 (head)
-Alembic offline upgrade/downgrade SQL: passed
+MySQL 8.4 empty-schema upgrade/downgrade/re-upgrade: passed
 Ruff: passed
 mypy app evals scripts/llm_fault_stub.py: passed (102 source files)
 git diff --check: passed
@@ -3131,6 +3192,7 @@ git diff --check: passed
 - 2026-10-06 在专用测试 PR 上完成 Prompt v3 + DeepSeek + GitHub 多行范围 inline comment 真实联调：模型位置 `demo.py:7-9` 经过本地校验和 MySQL 持久化，Create Review 返回 200，远端确认 1 条 review comment，Task/Report/Publication 各保持 1 条；
 - 2026-10-06 完成严格单行 inline comment 真实联调：单行 Diff 得到 `demo.py:2-2`，DeepSeek 与 GitHub Create Review 均返回 200，远端 Review/comment 各 1 条；随后重投同一 delivery，没有新 Worker 任务、DeepSeek 调用或 GitHub Review，数据库与远端数量及 attempt count 均保持不变；
 - 2026-10-07 完成无位置 Finding 的 Summary-only 受控真实联调：真实 Webhook、Celery、MySQL 和 GitHub Create Review 链路仅将 LLM 上游替换为本地 Stub；数据库保存 1 条 `start_line/end_line=NULL` 的完整 Finding，远端只有 1 条 Summary Review 且 inline comment 为 0，Task/Report/Publication 均唯一且 `attempt_count=1`；验收后 Fault Stub 已停止，Worker 已恢复 `deepseek` / `deepseek-flash` 并通过 Celery ping；
+- 2026-10-07 在独立临时 schema 上完成 MySQL 8.4 migration 往返：首次发现并修复 `20260904_0002` downgrade 提前删除外键支撑索引导致的错误 1553，修复后 `base → head → base → head` 全部通过并回到 `20261003_0006 (head)`；临时 schema 已删除，GitHub Actions 远端首次运行仍待提交后验收；
 - Celery Worker 在线；
 - GitHub App 已完成多次真实 PR 评审；
 - DeepSeek 真实识别空列表除零问题；
@@ -3162,7 +3224,7 @@ git diff --check: passed
 
 ### 9.1 最近下一步
 
-1. 补 GitHub Actions CI，把 pytest、Ruff、mypy 和 migration 检查固化为提交门禁；
+1. 提交并推送 CI 变更，验收 GitHub Actions 的 `quality` 与 `mysql-migrations` 两个 Job，并把远端证据写回本文；
 2. 完成 README 架构图、时序图、脱敏演示截图、快速启动与真实 GitHub App 联调手册；
 3. 执行最终全量测试、Docker 健康检查和敏感文件审计，冻结暑期实习版并打版本标签；
 4. 整理简历表述、项目讲解主线和高频面试追问；之后再按需要选择大型 PR 分片与预算控制、生产可观测性或更大真实评测集。

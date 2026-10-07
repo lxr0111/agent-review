@@ -54,8 +54,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_webhook_events_type_created", table_name="webhook_events")
-    op.drop_index("ix_webhook_events_review_task_id", table_name="webhook_events")
+    # Dropping the table removes its indexes and foreign key together. MySQL rejects
+    # dropping ix_webhook_events_review_task_id first because it backs the foreign key.
     op.drop_table("webhook_events")
     op.drop_index("ix_review_tasks_delivery_id", table_name="review_tasks")
     op.drop_column("review_tasks", "delivery_id")
