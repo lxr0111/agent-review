@@ -15,6 +15,7 @@ build/
 secrets/
 *.pem
 /evals/results/
+*.docx
 
 # Local diagnostics
 SANDBOX_WRITE_CHECK.md
