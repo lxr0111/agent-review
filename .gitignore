@@ -16,6 +16,8 @@ secrets/
 *.pem
 /evals/results/
 *.docx
+*.log
+/指令.txt
 
 # Local diagnostics
 SANDBOX_WRITE_CHECK.md
