@@ -38,8 +38,7 @@ def evaluate_multi_agent_case(
         result = orchestrator.review_with_metadata(case.to_review_context())
     except PlannedAgentExecutionError as error:
         executions = tuple(
-            _successful_execution(execution)
-            for execution in error.completed_executions
+            _successful_execution(execution) for execution in error.completed_executions
         ) + (
             AgentExecutionEvaluation(
                 role=error.failed_role,
@@ -89,8 +88,7 @@ def _successful_multi_agent_evaluation(
     executions = tuple(_successful_execution(execution) for execution in result.executions)
     pre_aggregation_count = sum(execution.finding_count for execution in executions)
     merged_count = sum(
-        decision.action == AggregationAction.MERGED
-        for decision in result.aggregation.decisions
+        decision.action == AggregationAction.MERGED for decision in result.aggregation.decisions
     )
     return successful_case_evaluation(
         case,
@@ -131,8 +129,7 @@ def _successful_multi_agent_evaluation(
 
 def _planned_agents(plan: ReviewPlan) -> tuple[PlannedAgentEvaluation, ...]:
     return tuple(
-        PlannedAgentEvaluation(role=agent.role, reasons=agent.reasons)
-        for agent in plan.agents
+        PlannedAgentEvaluation(role=agent.role, reasons=agent.reasons) for agent in plan.agents
     )
 
 
@@ -194,17 +191,14 @@ def _agent_contributions(
                 role=execution.role,
                 raw_finding_count=len(execution.result.report.findings),
                 kept_finding_count=sum(
-                    decision.action == AggregationAction.KEPT
-                    for decision in role_decisions
+                    decision.action == AggregationAction.KEPT for decision in role_decisions
                 ),
                 merged_finding_count=sum(
-                    decision.action == AggregationAction.MERGED
-                    for decision in role_decisions
+                    decision.action == AggregationAction.MERGED for decision in role_decisions
                 ),
                 unique_finding_count=sum(
                     decision.action == AggregationAction.KEPT
-                    and roles_by_fingerprint[decision.canonical_fingerprint]
-                    == {execution.role}
+                    and roles_by_fingerprint[decision.canonical_fingerprint] == {execution.role}
                     for decision in role_decisions
                 ),
             )

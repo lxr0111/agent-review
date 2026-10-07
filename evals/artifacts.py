@@ -37,9 +37,7 @@ def load_evaluation_artifact(path: Path) -> EvaluationArtifact:
 
 def ensure_evaluation_artifact_path_available(path: Path) -> None:
     if path.exists():
-        raise EvaluationArtifactError(
-            f"refusing to overwrite existing evaluation artifact: {path}"
-        )
+        raise EvaluationArtifactError(f"refusing to overwrite existing evaluation artifact: {path}")
 
 
 def save_evaluation_artifact(artifact: EvaluationArtifact, path: Path) -> None:

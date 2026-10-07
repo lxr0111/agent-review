@@ -14,9 +14,7 @@ from evals.comparison import (
 )
 
 BASELINE_PATH = Path("evals/baselines/deepseek-flash__review-v1__seed-v1.json")
-PROMPT_V2_BASELINE_PATH = Path(
-    "evals/baselines/deepseek-flash__review-v2__seed-v1.json"
-)
+PROMPT_V2_BASELINE_PATH = Path("evals/baselines/deepseek-flash__review-v2__seed-v1.json")
 
 
 def _candidate_with_less_noise(baseline: ModelBaseline) -> ModelBaseline:
@@ -70,10 +68,7 @@ def test_checked_in_deepseek_baseline_loads_with_derived_quality_metrics() -> No
     assert comparison.metrics["precision"].baseline == pytest.approx(8 / 18)
     assert comparison.metrics["f1"].baseline == pytest.approx(8 / 13)
     assert comparison.metrics["negative_sample_case_pass_rate"].baseline == 0.0
-    assert all(
-        metric.status == DeltaStatus.UNCHANGED
-        for metric in comparison.metrics.values()
-    )
+    assert all(metric.status == DeltaStatus.UNCHANGED for metric in comparison.metrics.values())
 
 
 def test_baseline_comparison_allows_prompt_versions_from_different_commits() -> None:
@@ -102,14 +97,10 @@ def test_comparison_reports_metric_and_per_case_finding_changes() -> None:
     assert comparison.metrics["false_positives"].status == DeltaStatus.IMPROVED
     assert comparison.metrics["severity_match"].status == DeltaStatus.IMPROVED
     first_case = next(
-        case
-        for case in comparison.cases
-        if case.case_id == "correctness-empty-average"
+        case for case in comparison.cases if case.case_id == "correctness-empty-average"
     )
     assert first_case.candidate_case_pass is True
-    assert [finding.title for finding in first_case.removed_findings] == [
-        "New helper is untested"
-    ]
+    assert [finding.title for finding in first_case.removed_findings] == ["New helper is untested"]
     assert first_case.added_findings == ()
     assert len(first_case.label_changes) == 1
     assert first_case.label_changes[0].baseline.severity == FindingSeverity.HIGH
@@ -120,11 +111,7 @@ def test_comparison_rejects_different_dataset_content() -> None:
     baseline = load_model_baseline(BASELINE_PATH)
     candidate = _candidate_with_less_noise(baseline)
     candidate = candidate.model_copy(
-        update={
-            "evaluation": candidate.evaluation.model_copy(
-                update={"dataset_sha256": "b" * 64}
-            )
-        }
+        update={"evaluation": candidate.evaluation.model_copy(update={"dataset_sha256": "b" * 64})}
     )
 
     with pytest.raises(BaselineComparisonError, match="SHA-256"):
@@ -156,7 +143,5 @@ def test_compare_cli_prints_offline_json_report(tmp_path: Path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["comparison_schema_version"] == (
-        "agent-review-baseline-comparison-v1"
-    )
+    assert payload["comparison_schema_version"] == ("agent-review-baseline-comparison-v1")
     assert payload["metrics"]["precision"]["status"] == "improved"

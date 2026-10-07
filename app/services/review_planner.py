@@ -29,9 +29,7 @@ class DeterministicReviewPlanner:
         AgentRole.PERFORMANCE,
         AgentRole.MAINTAINABILITY,
     )
-    _SIGNALS: ClassVar[
-        dict[AgentRole, tuple[tuple[str, tuple[str, ...]], ...]]
-    ] = {
+    _SIGNALS: ClassVar[dict[AgentRole, tuple[tuple[str, tuple[str, ...]], ...]]] = {
         AgentRole.SECURITY: (
             ("database input boundary", ("cursor.execute", "select *", "sql", "raw query")),
             ("command execution boundary", ("subprocess", "shell=true", "os.system", "eval(")),
@@ -71,9 +69,7 @@ class DeterministicReviewPlanner:
         }
         for role, rules in self._SIGNALS.items():
             matched_reasons = [
-                reason
-                for reason, signals in rules
-                if any(signal in corpus for signal in signals)
+                reason for reason, signals in rules if any(signal in corpus for signal in signals)
             ]
             if matched_reasons:
                 reasons[role] = matched_reasons
@@ -107,10 +103,7 @@ class DeterministicReviewPlanner:
                 if not raw_line.startswith("+") or raw_line.startswith("+++"):
                     continue
                 line = raw_line[1:].strip().casefold()
-                if (
-                    not line
-                    or line.startswith(("#", "def ", "class ", "import ", "from "))
-                ):
+                if not line or line.startswith(("#", "def ", "class ", "import ", "from ")):
                     continue
                 added_line_counts[line] = added_line_counts.get(line, 0) + 1
         return any(count >= 3 for count in added_line_counts.values())

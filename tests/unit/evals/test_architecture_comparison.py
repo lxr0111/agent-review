@@ -85,12 +85,8 @@ def test_architecture_comparison_reports_quality_cost_and_contribution() -> None
     assert comparison.efficiency.additional_mean_latency_ms_vs_general == 140
     assert comparison.efficiency.matched_findings_per_extra_1k_tokens == 0
     assert comparison.efficiency.multi_agent_total_agent_calls == 2
-    assert comparison.cases[0].multi_agent_vs_general_status == (
-        ArchitectureCaseStatus.UNCHANGED
-    )
-    assert comparison.cases[0].multi_agent_vs_general_reasons == (
-        "no scored quality change",
-    )
+    assert comparison.cases[0].multi_agent_vs_general_status == (ArchitectureCaseStatus.UNCHANGED)
+    assert comparison.cases[0].multi_agent_vs_general_reasons == ("no scored quality change",)
 
 
 def test_architecture_comparison_explains_per_case_quality_improvement() -> None:

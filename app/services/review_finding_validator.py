@@ -64,6 +64,4 @@ class ReviewFindingValidator:
         if not finding.suggestion.strip():
             raise ReviewFindingValidationError("Agent finding suggestion must not be empty")
         if not 0 <= finding.confidence <= 1:
-            raise ReviewFindingValidationError(
-                "Agent finding confidence must be between 0 and 1"
-            )
+            raise ReviewFindingValidationError("Agent finding confidence must be between 0 and 1")

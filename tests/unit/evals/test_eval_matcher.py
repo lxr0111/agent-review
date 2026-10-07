@@ -10,12 +10,12 @@ from evals.matcher import MatcherVersion, match_findings
 from evals.schemas import EvalExpectedFinding, EvalLineRange, load_dataset
 
 HOLDOUT_DATASET_PATH = Path("evals/cases/review_holdout_v1.json")
-HOLDOUT_BASELINE_PATH = Path(
-    "evals/baselines/deepseek-flash__review-v2__holdout-v1.json"
-)
+HOLDOUT_BASELINE_PATH = Path("evals/baselines/deepseek-flash__review-v2__holdout-v1.json")
 
 
-def _expected(*, finding_id: str = "division", file_path: str = "src/stats.py") -> EvalExpectedFinding:
+def _expected(
+    *, finding_id: str = "division", file_path: str = "src/stats.py"
+) -> EvalExpectedFinding:
     return EvalExpectedFinding(
         id=finding_id,
         description="Empty input can cause division by zero.",

@@ -444,9 +444,7 @@ def aggregate_metrics(
     cases: tuple[CaseEvaluation, ...],
 ) -> AggregateMetrics:
     total_cases = len(cases)
-    successful_cases = sum(
-        case.outcome == EvaluationOutcome.SUCCESSFUL_CASE for case in cases
-    )
+    successful_cases = sum(case.outcome == EvaluationOutcome.SUCCESSFUL_CASE for case in cases)
     expected_findings = sum(case.expected_finding_count for case in cases)
     matched_findings = sum(case.matched_finding_count for case in cases)
     matched_denominator = matched_findings
@@ -487,13 +485,9 @@ def aggregate_metrics(
         usage=_aggregate_usage(cases),
         total_agent_calls=sum(len(case.agent_executions) for case in cases),
         pre_aggregation_findings=pre_aggregation_findings,
-        post_aggregation_findings=sum(
-            case.post_aggregation_finding_count for case in cases
-        ),
+        post_aggregation_findings=sum(case.post_aggregation_finding_count for case in cases),
         merged_findings=merged_findings,
-        aggregation_conflicts=sum(
-            case.aggregation_conflict_count for case in cases
-        ),
+        aggregation_conflicts=sum(case.aggregation_conflict_count for case in cases),
         duplicate_rate=_ratio(merged_findings, pre_aggregation_findings),
         agent_contributions=_aggregate_agent_contributions(cases),
     )
@@ -554,12 +548,16 @@ def _eval_usage(usage: LLMTokenUsage | None) -> EvalUsage:
 
 
 def _sum_if_complete(values: list[int | None]) -> int | None:
-    return sum(value for value in values if value is not None) if all(
-        value is not None for value in values
-    ) else None
+    return (
+        sum(value for value in values if value is not None)
+        if all(value is not None for value in values)
+        else None
+    )
 
 
 def _sum_float_if_complete(values: list[float | None]) -> float | None:
-    return sum(value for value in values if value is not None) if all(
-        value is not None for value in values
-    ) else None
+    return (
+        sum(value for value in values if value is not None)
+        if all(value is not None for value in values)
+        else None
+    )

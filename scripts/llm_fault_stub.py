@@ -15,9 +15,7 @@ from typing import Any
 RETRYABLE_SCENARIOS = frozenset({"timeout", "rate_limit", "server_error"})
 PERMANENT_SCENARIOS = frozenset({"unauthorized", "forbidden", "invalid_schema"})
 SUCCESS_SCENARIOS = frozenset({"success", "finding_without_location"})
-SUPPORTED_SCENARIOS = frozenset(
-    {*SUCCESS_SCENARIOS, *RETRYABLE_SCENARIOS, *PERMANENT_SCENARIOS}
-)
+SUPPORTED_SCENARIOS = frozenset({*SUCCESS_SCENARIOS, *RETRYABLE_SCENARIOS, *PERMANENT_SCENARIOS})
 
 
 @dataclass(frozen=True, slots=True)

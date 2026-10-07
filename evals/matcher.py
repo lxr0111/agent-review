@@ -101,14 +101,10 @@ def _text_match_score(
 ) -> tuple[float, float]:
     combined_actual_text = f"{actual.title} {actual.explanation} {actual.suggestion}"
     normalizer = (
-        _normalize_text_v1
-        if matcher_version == MatcherVersion.TEXT_V1
-        else _normalize_text_v2
+        _normalize_text_v1 if matcher_version == MatcherVersion.TEXT_V1 else _normalize_text_v2
     )
     term_matcher = (
-        _contains_phrase_v1
-        if matcher_version == MatcherVersion.TEXT_V1
-        else _contains_terms_v2
+        _contains_phrase_v1 if matcher_version == MatcherVersion.TEXT_V1 else _contains_terms_v2
     )
     actual_text = normalizer(combined_actual_text)
     matched_groups = sum(

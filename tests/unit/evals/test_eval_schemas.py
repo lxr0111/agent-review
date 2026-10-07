@@ -20,9 +20,7 @@ def test_seed_dataset_has_required_case_distribution() -> None:
     assert sum(len(case.expected_findings) for case in dataset.cases) == 8
 
     categories = Counter(
-        finding.category
-        for case in dataset.cases
-        for finding in case.expected_findings
+        finding.category for case in dataset.cases for finding in case.expected_findings
     )
     assert categories[FindingCategory.CORRECTNESS] == 2
     assert categories[FindingCategory.SECURITY] == 2

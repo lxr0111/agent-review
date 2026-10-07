@@ -20,12 +20,8 @@ from evals.rescoring import (
 from evals.schemas import load_dataset
 
 HOLDOUT_DATASET_PATH = Path("evals/cases/review_holdout_v1.json")
-HOLDOUT_BASELINE_PATH = Path(
-    "evals/baselines/deepseek-flash__review-v2__holdout-v1.json"
-)
-HOLDOUT_RESCORE_PATH = Path(
-    "evals/rescores/deepseek-flash__review-v2__holdout-v1__text-v2.json"
-)
+HOLDOUT_BASELINE_PATH = Path("evals/baselines/deepseek-flash__review-v2__holdout-v1.json")
+HOLDOUT_RESCORE_PATH = Path("evals/rescores/deepseek-flash__review-v2__holdout-v1__text-v2.json")
 RESCORED_AT = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
 
@@ -59,10 +55,7 @@ def test_text_v2_rescores_saved_findings_without_changing_source_baseline() -> N
     assert rescore.evaluation.metrics.category_match == 0.875
     assert rescore.evaluation.metrics.severity_match == 0.625
     assert rescore.evaluation.metrics.usage == baseline.evaluation.metrics.usage
-    assert (
-        rescore.evaluation.metrics.latency_mean_ms
-        == baseline.evaluation.metrics.latency_mean_ms
-    )
+    assert rescore.evaluation.metrics.latency_mean_ms == baseline.evaluation.metrics.latency_mean_ms
     assert rescore.source_metrics.precision == pytest.approx(2 / 3)
     assert rescore.source_metrics.f1 == pytest.approx(12 / 17)
     assert rescore.rescored_metrics.precision == pytest.approx(8 / 9)

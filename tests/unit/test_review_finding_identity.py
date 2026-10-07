@@ -170,8 +170,7 @@ def test_identity_v4_merges_live_lifetime_findings_by_problem_and_repair_code() 
             "current time, so a still-valid key gets a negative remaining lifetime."
         ),
         suggestion=(
-            "Compute the other direction with "
-            "`return int((expires_at - now).total_seconds())`."
+            "Compute the other direction with `return int((expires_at - now).total_seconds())`."
         ),
         file_path="src/api_keys.py",
         category=FindingCategory.CORRECTNESS,

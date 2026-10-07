@@ -243,9 +243,7 @@ def _case_comparison(
         "severity matches",
     )
     if general.outcome != multi_agent.outcome:
-        message = (
-            f"outcome changed from {general.outcome.value} to {multi_agent.outcome.value}"
-        )
+        message = f"outcome changed from {general.outcome.value} to {multi_agent.outcome.value}"
         if multi_agent.outcome == EvaluationOutcome.SUCCESSFUL_CASE:
             improvements.append(message)
         else:

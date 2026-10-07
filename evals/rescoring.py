@@ -156,9 +156,7 @@ def _filename_component(value: str) -> str:
 def _quality_metrics(evaluation: EvaluationRun) -> RescoreQualityMetrics:
     metrics = evaluation.metrics
     finding_denominator = metrics.matched_findings + metrics.false_positives
-    precision = (
-        metrics.matched_findings / finding_denominator if finding_denominator else None
-    )
+    precision = metrics.matched_findings / finding_denominator if finding_denominator else None
     recall = metrics.recall
     if precision is None or recall is None:
         f1 = None

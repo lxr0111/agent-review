@@ -175,10 +175,9 @@ def _shares_root_cause_and_code_evidence(
 
     left_title_tokens = _signal_tokens(left.title)
     right_title_tokens = _signal_tokens(right.title)
-    if (
-        len(left_title_tokens & right_title_tokens) >= 2
-        and _signal_bigrams(left.title) & _signal_bigrams(right.title)
-    ):
+    if len(left_title_tokens & right_title_tokens) >= 2 and _signal_bigrams(
+        left.title
+    ) & _signal_bigrams(right.title):
         return True
 
     return _shares_explanation_root_cause(left.explanation, right.explanation)
@@ -191,10 +190,7 @@ def _shares_explanation_root_cause(left: str, right: str) -> bool:
     right_tokens = _explanation_signal_tokens(right_prose)
     if len(left_tokens & right_tokens) < _MIN_SHARED_EXPLANATION_SIGNALS:
         return False
-    return bool(
-        _explanation_signal_bigrams(left_prose)
-        & _explanation_signal_bigrams(right_prose)
-    )
+    return bool(_explanation_signal_bigrams(left_prose) & _explanation_signal_bigrams(right_prose))
 
 
 def _shares_problem_and_remediation_code_evidence(

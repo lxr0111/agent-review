@@ -61,13 +61,8 @@ def test_successful_case_scores_category_and_severity_after_matching() -> None:
 
 def test_error_classification_distinguishes_required_outcomes() -> None:
     assert classify_error(httpx.ConnectError("offline")) == EvaluationOutcome.TRANSPORT_ERROR
-    assert (
-        classify_error(LLMTransientError("timeout")) == EvaluationOutcome.TRANSPORT_ERROR
-    )
-    assert (
-        classify_error(LLMAuthenticationError("invalid key"))
-        == EvaluationOutcome.PROVIDER_ERROR
-    )
+    assert classify_error(LLMTransientError("timeout")) == EvaluationOutcome.TRANSPORT_ERROR
+    assert classify_error(LLMAuthenticationError("invalid key")) == EvaluationOutcome.PROVIDER_ERROR
     assert classify_error(LLMOutputError("invalid output")) == EvaluationOutcome.SCHEMA_ERROR
 
 

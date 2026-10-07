@@ -121,9 +121,7 @@ def validate_run_mode(
             "--multi-agent baseline saving is not supported until its schema is stabilized"
         )
     if output is not None and save_baseline:
-        raise UnsafeEvaluationModeError(
-            "--output and --save-baseline are mutually exclusive"
-        )
+        raise UnsafeEvaluationModeError("--output and --save-baseline are mutually exclusive")
     if output is not None and plan_only:
         raise UnsafeEvaluationModeError(
             "--output saves evaluation artifacts and cannot be used with --plan-only"
@@ -241,9 +239,7 @@ def run_live_multi_agent_evaluation(
 ) -> EvaluationRun:
     selected_cases = _select_cases(dataset, max_cases=max_cases, case_id=case_id)
     orchestrator = _create_planned_orchestrator(provider)
-    cases = tuple(
-        evaluate_multi_agent_case(case, orchestrator) for case in selected_cases
-    )
+    cases = tuple(evaluate_multi_agent_case(case, orchestrator) for case in selected_cases)
     return EvaluationRun(
         run_kind="multi_agent_live_evaluation",
         provider="deepseek",
@@ -382,9 +378,7 @@ def _save_artifact_if_requested(
 
 
 def _argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run the offline AgentReview evaluator self-test."
-    )
+    parser = argparse.ArgumentParser(description="Run the offline AgentReview evaluator self-test.")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--provider", choices=("mock", "deepseek"), default="mock")
     parser.add_argument("--live", action="store_true")

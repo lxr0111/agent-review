@@ -9,9 +9,7 @@ SEED_PATH = Path("evals/cases/review_seed_v1.json")
 HOLDOUT_PATH = Path("evals/cases/review_holdout_v1.json")
 HOLDOUT_V2_PATH = Path("evals/cases/review_holdout_v2.json")
 EXPECTED_HOLDOUT_SHA256 = "9902805446cea36d711bdb8450f64609633ac6599099dc5810726c78f302567c"
-EXPECTED_HOLDOUT_V2_SHA256 = (
-    "ece7d8102bb1973afa1c290928e4051e9f497f5e99045974ab7e04b30e2b3303"
-)
+EXPECTED_HOLDOUT_V2_SHA256 = "ece7d8102bb1973afa1c290928e4051e9f497f5e99045974ab7e04b30e2b3303"
 
 
 def test_holdout_dataset_is_frozen_and_structurally_distinct_from_seed() -> None:
@@ -23,20 +21,14 @@ def test_holdout_dataset_is_frozen_and_structurally_distinct_from_seed() -> None
     assert sum(case.is_negative for case in holdout.cases) == 2
     assert dataset_sha256(HOLDOUT_PATH) == EXPECTED_HOLDOUT_SHA256
     assert {case.id for case in seed.cases}.isdisjoint(case.id for case in holdout.cases)
-    assert {
-        changed_file.patch for case in seed.cases for changed_file in case.files
-    }.isdisjoint(
+    assert {changed_file.patch for case in seed.cases for changed_file in case.files}.isdisjoint(
         changed_file.patch for case in holdout.cases for changed_file in case.files
     )
 
 
 def test_holdout_covers_required_categories_and_multi_file_review() -> None:
     holdout = load_dataset(HOLDOUT_PATH)
-    categories = {
-        finding.category
-        for case in holdout.cases
-        for finding in case.expected_findings
-    }
+    categories = {finding.category for case in holdout.cases for finding in case.expected_findings}
 
     assert categories == {
         FindingCategory.CORRECTNESS,
@@ -77,11 +69,9 @@ def test_holdout_v2_is_frozen_and_only_repairs_the_known_fixture() -> None:
     v1_by_id = {case.id: case for case in holdout_v1.cases}
     v2_by_id = {case.id: case for case in holdout_v2.cases}
     repaired_case_id = "holdout-negative-contained-upload-path"
-    assert {
-        case_id
-        for case_id in v1_by_id
-        if v1_by_id[case_id] != v2_by_id[case_id]
-    } == {repaired_case_id}
+    assert {case_id for case_id in v1_by_id if v1_by_id[case_id] != v2_by_id[case_id]} == {
+        repaired_case_id
+    }
 
     v1_case = v1_by_id[repaired_case_id]
     v2_case = v2_by_id[repaired_case_id]

@@ -267,13 +267,9 @@ def _validate_case_ids(
     reference_case_ids = [case.case_id for case in reference.cases]
     candidate_case_ids = [case.case_id for case in candidate.cases]
     if len(reference_case_ids) != len(set(reference_case_ids)):
-        raise BaselineComparisonError(
-            f"{reference_name} contains duplicate case IDs"
-        )
+        raise BaselineComparisonError(f"{reference_name} contains duplicate case IDs")
     if len(candidate_case_ids) != len(set(candidate_case_ids)):
-        raise BaselineComparisonError(
-            f"{candidate_name} contains duplicate case IDs"
-        )
+        raise BaselineComparisonError(f"{candidate_name} contains duplicate case IDs")
     if set(reference_case_ids) != set(candidate_case_ids):
         raise BaselineComparisonError(
             f"{reference_name} and {candidate_name} case IDs do not match"
