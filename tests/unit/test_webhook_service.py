@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.exceptions import InvalidWebhookPayload
 from app.domain.review.enums import ReviewStatus, WebhookEventStatus
 from app.models import Base
+from app.models.review_dispatch_outbox import ReviewDispatchOutbox
 from app.models.review_task import ReviewTask
 from app.models.webhook_event import WebhookEvent
 from app.services.webhook_service import GitHubWebhookService
@@ -48,7 +49,6 @@ def test_pull_request_event_creates_queued_review_and_audit_event(session: Sessi
     event = session.scalar(select(WebhookEvent))
 
     assert result.status == "accepted"
-    assert result.should_enqueue is True
     assert task is not None
     assert task.status == ReviewStatus.QUEUED
     assert task.repository == "owner/repository"
@@ -59,6 +59,7 @@ def test_pull_request_event_creates_queued_review_and_audit_event(session: Sessi
     assert event.status == WebhookEventStatus.ACCEPTED
     assert event.review_task_id == task.id
     assert len(event.payload_digest) == 64
+    assert session.scalar(select(func.count()).select_from(ReviewDispatchOutbox)) == 1
 
 
 def test_same_delivery_is_idempotent(session: Session) -> None:
@@ -71,9 +72,9 @@ def test_same_delivery_is_idempotent(session: Session) -> None:
 
     assert second.status == "duplicate"
     assert second.review_task_id == first.review_task_id
-    assert second.should_enqueue is False
     assert task_count == 1
     assert event_count == 1
+    assert session.scalar(select(func.count()).select_from(ReviewDispatchOutbox)) == 1
 
 
 def test_same_delivery_with_different_body_is_rejected(session: Session) -> None:
@@ -103,9 +104,27 @@ def test_new_delivery_for_same_pr_commit_reuses_review_task(session: Session) ->
 
     assert second.status == "duplicate"
     assert second.review_task_id == first.review_task_id
-    assert second.should_enqueue is False
     assert task_count == 1
     assert event_count == 2
+    assert session.scalar(select(func.count()).select_from(ReviewDispatchOutbox)) == 1
+
+
+def test_outbox_failure_rolls_back_webhook_event_and_task(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = GitHubWebhookService(session)
+
+    def fail_to_record(_task_id: object) -> None:
+        raise RuntimeError("outbox insert failed")
+
+    monkeypatch.setattr(service._outbox, "add_for_task", fail_to_record)
+    with pytest.raises(RuntimeError, match="outbox insert failed"):
+        service.handle("delivery-1", "pull_request", _pull_request_body())
+    session.rollback()
+
+    assert session.scalar(select(func.count()).select_from(WebhookEvent)) == 0
+    assert session.scalar(select(func.count()).select_from(ReviewTask)) == 0
+    assert session.scalar(select(func.count()).select_from(ReviewDispatchOutbox)) == 0
 
 
 @pytest.mark.parametrize(
@@ -131,3 +150,4 @@ def test_irrelevant_events_are_recorded_without_creating_review(
     assert result.review_task_id is None
     assert task_count == 0
     assert event_count == 1
+    assert session.scalar(select(func.count()).select_from(ReviewDispatchOutbox)) == 0

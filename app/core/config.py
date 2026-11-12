@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     review_worker_max_retries: int = Field(default=3, ge=0, le=10)
     review_retry_base_seconds: int = Field(default=5, ge=1, le=300)
     review_retry_max_seconds: int = Field(default=300, ge=1, le=3_600)
+    outbox_poll_seconds: float = Field(default=2.0, gt=0, le=60)
+    outbox_batch_size: int = Field(default=25, ge=1, le=500)
+    outbox_lease_seconds: int = Field(default=60, ge=1, le=3_600)
     github_webhook_secret: SecretStr | None = None
     github_app_client_id: str | None = None
     github_private_key_path: Path | None = None

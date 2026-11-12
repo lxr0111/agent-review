@@ -10,7 +10,8 @@ from app.services.review_service import ReviewService
 def test_create_review_queues_task() -> None:
     repository = Mock()
     repository.add.side_effect = lambda task: task
-    service = ReviewService(repository)
+    outbox = Mock()
+    service = ReviewService(repository, outbox)
 
     task = service.create(
         ReviewCreate(repository="owner/repo", pull_request_number=7, head_sha="abcdef123456")
@@ -19,6 +20,7 @@ def test_create_review_queues_task() -> None:
     assert task.status == ReviewStatus.QUEUED
     assert task.current_stage == "queued"
     repository.add.assert_called_once_with(task)
+    outbox.add_for_task.assert_called_once_with(task.id)
     repository.commit.assert_called_once()
 
 

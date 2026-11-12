@@ -13,6 +13,8 @@ LLM Provider 生成结构化问题，再将 Summary 与可定位的行级评论�
 
 - **端到端异步评审**：GitHub Webhook → FastAPI → Celery Worker → GitHub Diff →
   LLM Review → MySQL Report → GitHub Review。
+- **可靠任务投递**：Webhook 事件、评审任务和 Outbox 投递意图在同一数据库事务提交；
+  独立 Dispatcher 向 Redis 投递并在 Broker 故障后补投。
 - **安全的 GitHub App 接入**：使用短期 Installation Token，不依赖长期 Personal
   Access Token；Webhook 使用 HMAC-SHA256 验签。
 - **结构化模型输出**：Provider 统一返回 Pydantic 校验后的 Summary、Finding、严重程度、
@@ -38,8 +40,9 @@ LLM Provider 生成结构化问题，再将 Summary 与可定位的行级评论�
 ```mermaid
 flowchart LR
     GH[GitHub Pull Request] -->|Webhook| API[FastAPI API]
-    API -->|验签、事件与任务防重| DB[(MySQL)]
-    API -->|reviews.run| QUEUE[(Redis / Celery)]
+    API -->|验签、事件、任务和 Outbox 同事务| DB[(MySQL)]
+    DB -->|待投递任务| DISPATCH[Outbox Dispatcher]
+    DISPATCH -->|reviews.run| QUEUE[(Redis / Celery)]
     QUEUE --> WORKER[Celery Worker]
     WORKER -->|Installation Token| GHAPI[GitHub API]
     GHAPI -->|PR 元数据与 Diff| CONTEXT[Context + Diff Filter]
@@ -66,18 +69,21 @@ sequenceDiagram
     participant G as GitHub
     participant A as FastAPI
     participant M as MySQL
+    participant D as Outbox Dispatcher
     participant Q as Redis/Celery
     participant W as Worker
     participant L as LLM Provider
 
     G->>A: pull_request opened/synchronize/reopened
     A->>A: 验证 X-Hub-Signature-256
-    A->>M: 保存 Delivery 与 Review Task
+    A->>M: 同事务保存 Delivery、Review Task 与 Outbox
     alt Delivery 或 PR head 已处理
         A-->>G: 202，不重复投递任务
     else 新任务
-        A->>Q: reviews.run(task_id)
         A-->>G: 202 Accepted
+        D->>M: 认领待投递记录
+        D->>Q: reviews.run(task_id)
+        D->>M: 记录已投递，失败则延后重试
         Q->>W: 执行评审
         W->>G: 获取 PR、文件列表与 Diff
         W->>W: 文件过滤、Patch 预算、Diff 新增行映射
@@ -99,7 +105,9 @@ sequenceDiagram
 
 ### 1. 保证业务幂等，不声称 LLM Exactly Once
 
-系统能保证同一个 Delivery、同一个 PR Head 和同一份 Report 不产生重复的业务结果。
+系统对同一个 Delivery、同一个 PR Head 和同一份 Report 设置唯一业务身份。
+Outbox 保证数据库已提交的投递意图可补发，但消息可能重复投递；并发 Worker
+仍可能重复调用模型或竞争发布，尚不能声称严格 Exactly Once。
 但如果模型请求已经被服务端处理，而客户端在收到响应前超时，模型调用和费用理论上仍
 可能重复。因此项目明确表述为“业务结果幂等”，而不是无法证明的 Exactly Once。
 
@@ -180,6 +188,7 @@ Compose 会启动：
 - MySQL：宿主机端口 `3307`
 - Redis：宿主机端口 `6379`
 - Celery Worker
+- Outbox Dispatcher：扫描 MySQL 待投递任务，向 Redis 投递
 
 ### 4. 检查基础设施
 
@@ -188,10 +197,12 @@ Invoke-RestMethod http://localhost:8000/health/live
 Invoke-RestMethod http://localhost:8000/health/ready | ConvertTo-Json -Depth 3
 docker compose exec api alembic current
 docker compose exec worker celery -A app.workers.celery_app:celery_app inspect ping
+docker compose logs --tail=30 outbox-dispatcher
 ```
 
-预期 readiness 中 `database` 和 `redis` 均为 `ok`，Alembic 位于当前 head，Worker 返回
-`pong`。
+正常情况下 readiness 中 `database` 和 `redis` 均为 `ok`，Alembic 位于当前 head，Worker 返回
+`pong`。Redis 暂时不可用时，API readiness 仍可为 `ok`，但会显示 `redis: unavailable`；
+这表示任务可先可靠登记到 MySQL，评审要等 Dispatcher 与 Broker 恢复后才能继续。
 
 停止服务：
 
@@ -230,11 +241,11 @@ LLM_MODEL=<a Responses API compatible model>
 LLM_API_KEY=...
 ```
 
-重新创建 API 与 Worker，使环境变量生效：
+重新创建 API、Dispatcher 与 Worker，使环境变量生效：
 
 ```powershell
-docker compose up -d --build --force-recreate api worker
-docker compose logs -f api worker
+docker compose up -d --build --force-recreate api outbox-dispatcher worker
+docker compose logs -f api outbox-dispatcher worker
 ```
 
 在测试仓库创建或更新 PR 后，应观察到：Webhook 返回 `202`、Worker 完成 Pipeline、PR
@@ -252,6 +263,9 @@ docker compose logs -f api worker
 | `REVIEW_WORKER_MAX_RETRIES` | Worker 最大重试次数 | `3` |
 | `REVIEW_RETRY_BASE_SECONDS` | 指数退避初始秒数 | `5` |
 | `REVIEW_RETRY_MAX_SECONDS` | 退避上限 | `300` |
+| `OUTBOX_POLL_SECONDS` | Dispatcher 扫描间隔 | `2` |
+| `OUTBOX_BATCH_SIZE` | 单轮认领上限 | `25` |
+| `OUTBOX_LEASE_SECONDS` | 认领过期后可补投 | `60` |
 | `GITHUB_WEBHOOK_SECRET` | Webhook HMAC Secret | 真实联调必填 |
 | `GITHUB_APP_CLIENT_ID` | GitHub App Client ID | 真实联调必填 |
 | `GITHUB_PRIVATE_KEY_PATH` | GitHub App PEM 路径 | 真实联调必填 |
@@ -269,7 +283,7 @@ docker compose logs -f api worker
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health/live` | 进程存活检查 |
-| `GET` | `/health/ready` | MySQL 与 Redis readiness |
+| `GET` | `/health/ready` | MySQL 决定 API 接收能力；Redis 状态同时报告 |
 | `POST` | `/api/v1/webhooks/github` | GitHub App Webhook 入口 |
 | `POST` | `/api/v1/reviews` | 创建 Review Task |
 | `GET` | `/api/v1/reviews/{task_id}` | 查询阶段、尝试次数和终态 |

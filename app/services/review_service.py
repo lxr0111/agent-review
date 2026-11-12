@@ -5,16 +5,24 @@ from app.core.exceptions import InvalidStateTransition, ReviewTaskNotFound
 from app.domain.review.enums import ReviewStatus
 from app.domain.review.state_machine import ensure_transition
 from app.models.review_task import ReviewTask
+from app.repositories.review_dispatch_outbox_repository import ReviewDispatchOutboxRepository
 from app.repositories.review_task_repository import ReviewTaskRepository
 from app.schemas.review import ReviewCreate
 from app.schemas.webhook import GitHubPullRequestPayload
 
 
 class ReviewService:
-    def __init__(self, repository: ReviewTaskRepository) -> None:
+    def __init__(
+        self,
+        repository: ReviewTaskRepository,
+        outbox: ReviewDispatchOutboxRepository | None = None,
+    ) -> None:
         self._repository = repository
+        self._outbox = outbox
 
     def create(self, payload: ReviewCreate) -> ReviewTask:
+        if self._outbox is None:
+            raise RuntimeError("Review creation requires an outbox repository")
         task = ReviewTask(
             repository=payload.repository,
             pull_request_number=payload.pull_request_number,
@@ -24,9 +32,14 @@ class ReviewService:
             attempt_count=0,
             version=1,
         )
-        self._repository.add(task)
-        self._transition(task, ReviewStatus.QUEUED, "queued")
-        self._repository.commit()
+        try:
+            self._repository.add(task)
+            self._transition(task, ReviewStatus.QUEUED, "queued")
+            self._outbox.add_for_task(task.id)
+            self._repository.commit()
+        except Exception:
+            self._repository.rollback()
+            raise
         return task
 
     def create_from_github(self, payload: GitHubPullRequestPayload, delivery_id: str) -> ReviewTask:

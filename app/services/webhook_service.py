@@ -12,6 +12,7 @@ from app.core.exceptions import InvalidWebhookPayload
 from app.domain.review.enums import WebhookEventStatus
 from app.models.webhook_event import WebhookEvent
 from app.providers.github.webhook import get_webhook_action, parse_webhook_json
+from app.repositories.review_dispatch_outbox_repository import ReviewDispatchOutboxRepository
 from app.repositories.review_task_repository import ReviewTaskRepository
 from app.repositories.webhook_event_repository import WebhookEventRepository
 from app.schemas.webhook import GitHubPullRequestPayload
@@ -25,7 +26,6 @@ class WebhookHandlingResult:
     status: Literal["accepted", "duplicate", "ignored", "pong"]
     delivery_id: str
     review_task_id: UUID | None
-    should_enqueue: bool = False
 
 
 class GitHubWebhookService:
@@ -33,6 +33,7 @@ class GitHubWebhookService:
         self._session = session
         self._events = WebhookEventRepository(session)
         self._reviews = ReviewTaskRepository(session)
+        self._outbox = ReviewDispatchOutboxRepository(session)
         self._review_service = ReviewService(self._reviews)
 
     def handle(self, delivery_id: str, event_type: str, raw_body: bytes) -> WebhookHandlingResult:
@@ -84,6 +85,7 @@ class GitHubWebhookService:
             task_created = task is None
             if task is None:
                 task = self._review_service.create_from_github(pull_request, delivery_id)
+                self._outbox.add_for_task(task.id)
             event.review_task_id = task.id
             event.processed_at = datetime.now(UTC)
             self._session.commit()
@@ -98,7 +100,6 @@ class GitHubWebhookService:
             status="accepted" if task_created else "duplicate",
             delivery_id=delivery_id,
             review_task_id=task.id,
-            should_enqueue=task_created,
         )
 
     def _record_ignored(

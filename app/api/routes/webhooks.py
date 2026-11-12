@@ -7,7 +7,6 @@ from app.core.config import get_settings
 from app.core.exceptions import WebhookNotConfigured
 from app.core.security import verify_github_signature
 from app.schemas.webhook import WebhookResponse
-from app.workers.review_tasks import run_review
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -35,9 +34,6 @@ async def receive_github_webhook(
         settings.github_webhook_secret.get_secret_value(),
     )
     result = service.handle(github_delivery or "", github_event or "", raw_body)
-
-    if result.should_enqueue and result.review_task_id is not None:
-        run_review.delay(str(result.review_task_id))
 
     return WebhookResponse(
         status=result.status,

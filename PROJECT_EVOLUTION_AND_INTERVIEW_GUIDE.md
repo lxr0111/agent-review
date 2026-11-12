@@ -3248,6 +3248,40 @@ Tracked-content scan for Smee URL, private-key header and GitHub token prefixes:
 
 ---
 
+### 6.37 数据库提交与 Celery 投递之间的可靠性补口：Transactional Outbox
+
+#### 要解决的问题
+
+原 Webhook 和 `/reviews` 路由都先提交 MySQL，再直接调用 Celery `.delay()`。如果进程在两步之间崩溃，或 Redis 当时不可用，数据库可能留下 `queued` 任务，但没有任何消息通知 Worker。相同 Delivery 重投又会命中防重逻辑，不会自动补发该任务。
+
+#### 设计选择与修改行为
+
+- 新增 `review_dispatch_outbox` 表及 `20261112_0007` Migration，每个 Review Task 最多一条投递意图；只存任务 ID、投递状态、租约和重试元数据，不复制 Webhook Payload 或密钥；
+- Webhook 的 Event、Task、Outbox 记录在同一 MySQL 事务提交；手动创建 Review 的服务也在提交 Task 时写入 Outbox。API 不再直接调用 Redis，提交成功即可返回 `202`；
+- 独立 `outbox-dispatcher` 进程轮询待办记录，短事务中用 `FOR UPDATE SKIP LOCKED` 认领并设置租约，提交后才执行 Celery 发布；发布成功再以租约 Token 条件更新为 `sent`，失败则记录错误类型并限速重试，过期租约可重新认领；
+- API readiness 以 MySQL 为准，同时报告 Redis 状态；Compose 中 API 不再依赖 Redis 健康才启动，Dispatcher 单独运行并配置容器重启；
+- README、`.env.example`、GitHub Actions MySQL Job 同步更新。MySQL Job 在 Migration 往返后增加真实 MySQL `SKIP LOCKED` 行锁集成测试。
+
+#### 验证证据
+
+自动化与离线核验：本批全量 pytest 为 **354 passed、1 skipped、2 条第三方弃用警告**；跳过的是必须显式开启、需要已迁移 MySQL 的行锁集成测试。新增测试覆盖 Task/Outbox 同事务、写入失败回滚、API 不访问 Broker 即返回 `202`、Broker 故障后的延迟补投、租约过期接管、旧租约持有者不可确认新认领，以及“发布成功但本地确认前崩溃”可能产生二次投递。Ruff 检查通过；针对本批代码的 Ruff 格式检查通过；`mypy app evals scripts/llm_fault_stub.py` 通过；`git diff --check` 通过。Alembic MySQL 离线 SQL 生成到新 head，包含 Outbox 建表与索引。
+
+真实 MySQL 集成证据（2026-11-12 续验）：用户启动 Compose 后确认 API、MySQL、Redis 均 healthy，Worker 与 Outbox Dispatcher 均运行，业务库 `alembic current` 为 `20261112_0007 (head)`。我另建临时隔离 schema，从空库在线执行 Alembic `upgrade head`，再运行真实 MySQL 行锁集成测试，结果 **1 passed**：另一事务锁住 Outbox 行时，Dispatcher 的 `SKIP LOCKED` 不认领；解锁后可认领并调用测试用 Mock 发布器。首次试跑发现测试 Fixture 未先 flush 父任务，触发外键错误；修正后，共用业务库与常驻 Dispatcher 共享待投递表，存在测试竞争，因此不把该次共用库试跑计入有效证据。测试增加专用数据库名限制，只在隔离 schema 完成验收。临时 schema 验证后已删除；没有停止 Redis、清空业务库或调用真实 GitHub/DeepSeek。此证据证明 MySQL Migration 和行锁行为，不证明 Redis 故障恢复或 PR 端到端链路。新 CI Job 仍需提交推送后观察实际结果。
+
+#### 面试怎么讲
+
+> 我先发现一个常见的双写窗口：数据库提交成功后，如果 API 在向 Redis 投递任务前崩溃，同一 Delivery 的防重反而会让任务一直停在数据库里。于是我把任务和待投递消息放在同一个 MySQL 事务，另起 Dispatcher 将消息发给 Redis。Redis 故障时 API 仍可保存任务并返回 202，Dispatcher 恢复后补投。它解决的是“投递意图不丢”，不等于 Celery 消息或整个评审过程恰好执行一次。
+
+#### 准确边界与尚未完成
+
+- Outbox 提供至少一次投递：消息已进入 Redis、但 `sent` 尚未写回 MySQL 时，租约过期可能再投递一次；当前 Worker 尚没有完整的同任务长租约认领，两个 Worker 极端并发下仍可能重复调用模型或竞争发布 Review；
+- 两个不同 Delivery 若在同一 PR Head 上同时创建任务，当前 Webhook 的唯一约束冲突回退还没有独立的并发补偿流程；本批的 Outbox 不把这一入口竞争自动视为已解决；
+- 本轮没有补录迁移前已经存在的历史 `queued` 任务，升级时应先审计并决定是否人工补投，避免自动重放旧任务产生副作用；
+- Dispatcher 停止或积压目前主要靠日志观察，尚无任务等待时长、积压量和租约异常告警；MySQL 行锁已在隔离库验证，但本地 Redis 故障恢复、真实 PR 联调与新 CI 结果仍待验收；
+- 仓库中个人学习资料的既有 Ruff 格式问题属于预存改动，本批未触碰，不应把全仓格式检查描述为通过。
+
+---
+
 ## 7. 当前可用于简历的表述
 
 以下表述与现有实现和实测一致：

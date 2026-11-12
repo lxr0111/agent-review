@@ -1,4 +1,5 @@
 from app.models.base import Base
+from app.models.review_dispatch_outbox import ReviewDispatchOutbox
 from app.models.review_file import ReviewFile
 from app.models.review_finding import ReviewFindingRecord
 from app.models.review_publication import ReviewPublicationRecord
@@ -8,6 +9,7 @@ from app.models.webhook_event import WebhookEvent
 
 __all__ = [
     "Base",
+    "ReviewDispatchOutbox",
     "ReviewFile",
     "ReviewFindingRecord",
     "ReviewPublicationRecord",

@@ -26,6 +26,12 @@ class WebhookEventStatus(StrEnum):
     IGNORED = "ignored"
 
 
+class ReviewDispatchStatus(StrEnum):
+    PENDING = "pending"
+    LEASED = "leased"
+    SENT = "sent"
+
+
 class FileChangeStatus(StrEnum):
     ADDED = "added"
     MODIFIED = "modified"

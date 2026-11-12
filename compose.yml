@@ -37,6 +37,9 @@ services:
       REVIEW_WORKER_MAX_RETRIES: ${REVIEW_WORKER_MAX_RETRIES:-3}
       REVIEW_RETRY_BASE_SECONDS: ${REVIEW_RETRY_BASE_SECONDS:-5}
       REVIEW_RETRY_MAX_SECONDS: ${REVIEW_RETRY_MAX_SECONDS:-300}
+      OUTBOX_POLL_SECONDS: ${OUTBOX_POLL_SECONDS:-2}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-25}
+      OUTBOX_LEASE_SECONDS: ${OUTBOX_LEASE_SECONDS:-60}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-development-webhook-secret}
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_PRIVATE_KEY_PATH: ${GITHUB_PRIVATE_KEY_PATH:-secrets/github-app-private-key.pem}
@@ -59,8 +62,6 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 10s
@@ -79,6 +80,15 @@ services:
       redis:
         condition: service_healthy
       api:
+        condition: service_healthy
+
+  outbox-dispatcher:
+    build: .
+    environment: *app-environment
+    command: ["python", "-m", "app.workers.outbox_dispatcher"]
+    restart: unless-stopped
+    depends_on:
+      mysql:
         condition: service_healthy
 
 volumes:

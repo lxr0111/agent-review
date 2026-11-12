@@ -39,7 +39,9 @@ def readiness(response: Response) -> HealthResponse:
     finally:
         redis_client.close()
 
-    ready = all(value == "ok" for value in checks.values())
+    # The API can durably accept work while the broker is down; the outbox
+    # dispatcher will publish queued work after Redis recovers.
+    ready = checks["database"] == "ok"
     if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return HealthResponse(status="ok" if ready else "unavailable", checks=checks)
